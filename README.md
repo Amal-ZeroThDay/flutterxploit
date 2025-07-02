@@ -8,4 +8,8 @@ Built for devs, hackers, and learners. Educational use only.
 Topics: Auth bypass · Token theft · WebView injection · Frida · Secure Dart
 
 Author: [Amal ZerothDay](https://linkedin.com/in/amal-zerothday)  
-License: MIT
+
+© 2025 Amal ZerothDay. All rights reserved.
+Do not copy, redistribute, or republish this content without permission.
+
+
